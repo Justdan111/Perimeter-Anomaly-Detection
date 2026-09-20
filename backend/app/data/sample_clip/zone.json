@@ -1,0 +1,12 @@
+{
+  "name": "Roadway (west approach)",
+  "frame_width": 1280,
+  "frame_height": 720,
+  "points": [
+    [0, 428],
+    [340, 396],
+    [372, 468],
+    [252, 556],
+    [0, 628]
+  ]
+}

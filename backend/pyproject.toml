@@ -1,0 +1,37 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Perimeter anomaly detection — zone-based alerting over recorded video clips"
+authors = [
+    { name = "justdan111", email = "emmanuelngulube292@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=12.3.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "ultralytics>=8.4.157",
+    "uvicorn[standard]>=0.53.0",
+]
+
+# This is an application, not a distributable library: the `app` package is
+# imported from the project root, never built into a wheel. Without this, uv
+# tries to build the project and expects a src/ layout, which conflicts with
+# the app/ layout the architecture in docs/PROJECT.md specifies.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Put the project root on sys.path so tests import `app.services.zone_check`
+# the same way the running service does.
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
