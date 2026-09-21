@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# YOLO26-N weights — fetched on first run, not committed.
+# ~5.3MB of AGPL-3.0-licensed binary that Ultralytics downloads automatically;
+# no reason to carry it in git history.
+models/*.pt
+# Ultralytics writes machine-local paths and a per-install uuid here.
+models/Ultralytics/
