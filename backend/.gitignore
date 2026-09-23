@@ -15,3 +15,6 @@ wheels/
 models/*.pt
 # Ultralytics writes machine-local paths and a per-install uuid here.
 models/Ultralytics/
+
+# Pipeline output (snapshots) written by the API at runtime.
+output/

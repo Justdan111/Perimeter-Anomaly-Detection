@@ -101,3 +101,61 @@ class Detection(BaseModel):
                 f"bbox must be (x1, y1, x2, y2) with x1 <= x2 and y1 <= y2, got {bbox}"
             )
         return bbox
+
+
+class Alert(BaseModel):
+    """A person or vehicle detected inside the zone, in one frame of a clip.
+
+    One alert per in-zone detection per processed frame. There is no
+    de-duplication across frames: a car parked in the zone for 5 seconds is
+    ~120 alerts at full frame rate, because detections are independent per
+    frame and cross-frame tracking is explicitly out of scope.
+
+    NOTE: SPEC section 7 lists `timestamp_s`, `class_name` and `snapshot`.
+    The extra fields are deliberate. `frame_index`, `bbox` and `anchor`
+    make each alert checkable by hand: you can open the frame, see the box,
+    and see exactly which point was tested against the zone. `confidence`
+    lets a reviewer tell a solid detection from a marginal one.
+    """
+
+    timestamp_s: float = Field(
+        ge=0.0,
+        description="Position in the clip, computed as frame_index / clip fps.",
+    )
+    frame_index: int = Field(ge=0, description="0-based index of the frame in the clip.")
+    class_name: str = Field(description='Detected class, e.g. "person", "car".')
+    confidence: float = Field(ge=0.0, le=1.0)
+    bbox: tuple[float, float, float, float] = Field(
+        description="Bounding box as (x1, y1, x2, y2) in frame pixel coordinates."
+    )
+    anchor: Point = Field(
+        description=(
+            "The point that was tested against the zone: bottom-centre of the "
+            "bbox. For a box clipped by the bottom of the frame, this sits on "
+            "the frame edge rather than at the object's real (off-screen) feet."
+        )
+    )
+    zone_name: str = Field(description="Name of the zone the anchor fell inside.")
+    snapshot: str = Field(
+        description=(
+            "Filename of a downscaled (max 640 px wide), unannotated JPEG of the "
+            "frame, relative to "
+            "the snapshot directory the clip was processed with. Alerts from "
+            "the same frame share one file."
+        )
+    )
+
+
+class ClipResult(BaseModel):
+    """Everything produced by processing one clip."""
+
+    clip_fps: float = Field(gt=0.0, description="Frame rate reported by the clip.")
+    sample_fps: float | None = Field(
+        description="Requested sampling rate; None means every frame was processed."
+    )
+    frames_read: int = Field(ge=0, description="Frames decoded from the clip.")
+    frames_processed: int = Field(ge=0, description="Frames actually run through the detector.")
+    processing_time_s: float = Field(
+        ge=0.0, description="Wall-clock time for the whole clip, model load excluded."
+    )
+    alerts: list[Alert]
