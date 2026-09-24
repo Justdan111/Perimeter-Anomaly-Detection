@@ -2,7 +2,13 @@
 
 import { useState } from "react";
 
-import { type Bucket, type FrameGroup, formatCounts, touchesBottomEdge } from "@/lib/alerts";
+import {
+  type Bucket,
+  type FrameGroup,
+  formatCounts,
+  isWholeFrameZone,
+  touchesBottomEdge,
+} from "@/lib/alerts";
 import { apiUrl } from "@/lib/api";
 
 import { EdgeBadge } from "./EdgeNote";
@@ -26,13 +32,18 @@ export function AlertBuckets({
   zonePoints,
   clipDurationS,
 }: Props) {
+  // With a whole-frame zone a box cut off by the frame edge is inside either
+  // way, so the frame-edge warning can't apply (and ZonePanel says so).
+  const edgeMatters = !isWholeFrameZone(zonePoints, frameWidth, frameHeight);
   if (buckets.length === 0) {
     return <p className="text-sm text-muted">No alerts: nothing entered the zone.</p>;
   }
   return (
     <ol className="space-y-2" data-testid="buckets">
       {buckets.map((bucket) => {
-        const atEdge = bucket.alerts.filter((a) => touchesBottomEdge(a.bbox, frameHeight)).length;
+        const atEdge = edgeMatters
+          ? bucket.alerts.filter((a) => touchesBottomEdge(a.bbox, frameHeight)).length
+          : 0;
         return (
           <li key={bucket.index}>
             <details className="group rounded-lg border border-line bg-panel">
@@ -57,6 +68,7 @@ export function AlertBuckets({
                   <FrameCard
                     key={frame.frameIndex}
                     frame={frame}
+                    edgeMatters={edgeMatters}
                     frameWidth={frameWidth}
                     frameHeight={frameHeight}
                     zonePoints={zonePoints}
@@ -73,11 +85,13 @@ export function AlertBuckets({
 
 function FrameCard({
   frame,
+  edgeMatters,
   frameWidth,
   frameHeight,
   zonePoints,
 }: {
   frame: FrameGroup;
+  edgeMatters: boolean;
   frameWidth: number;
   frameHeight: number;
   zonePoints: [number, number][];
@@ -118,7 +132,9 @@ function FrameCard({
               <span className="font-mono text-xs tabular-nums text-muted">
                 {(a.confidence * 100).toFixed(0)}%
               </span>
-              {touchesBottomEdge(a.bbox, frameHeight) && <EdgeBadge label="at frame edge" />}
+              {edgeMatters && touchesBottomEdge(a.bbox, frameHeight) && (
+                <EdgeBadge label="at frame edge" />
+              )}
             </li>
           ))}
         </ul>

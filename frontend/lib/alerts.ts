@@ -125,3 +125,19 @@ export function touchesBottomEdge(bbox: BBox, frameHeight: number): boolean {
 export function zoneBottomMargin(points: [number, number][], frameHeight: number): number {
   return frameHeight - Math.max(...points.map(([, y]) => y));
 }
+
+/** Whether a zone is exactly the whole frame (the default for uploads). */
+export function isWholeFrameZone(
+  points: [number, number][],
+  frameWidth: number,
+  frameHeight: number,
+): boolean {
+  if (points.length !== 4) return false;
+  const corners = new Set(points.map(([x, y]) => `${x},${y}`));
+  return [
+    `0,0`,
+    `${frameWidth},0`,
+    `${frameWidth},${frameHeight}`,
+    `0,${frameHeight}`,
+  ].every((c) => corners.has(c));
+}

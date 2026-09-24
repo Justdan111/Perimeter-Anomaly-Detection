@@ -272,3 +272,72 @@ class TestAlertsForFrame:
         assert alerts_for_frame(
             [], ZONE, frame_index=0, clip_fps=24.0, snapshot="f.jpg"
         ) == []
+
+
+# --- Phase 1: class selection, whole-frame zone, progress -------------------------------
+
+from app.services.clip_processor import (  # noqa: E402
+    CLASS_GROUPS,
+    count_sampled_frames,
+    whole_frame_zone,
+)
+
+
+class TestClassGroups:
+    def test_groups_are_exactly_the_existing_allowed_list_split_in_two(self):
+        # Class selection exposes the existing filter list; it must not
+        # quietly add or drop a class.
+        assert CLASS_GROUPS["person"] == {"person"}
+        assert CLASS_GROUPS["vehicle"] == {"car", "truck", "bus", "motorcycle"}
+        assert CLASS_GROUPS["both"] == ALLOWED_CLASSES
+        assert CLASS_GROUPS["person"] | CLASS_GROUPS["vehicle"] == ALLOWED_CLASSES
+        assert not CLASS_GROUPS["person"] & CLASS_GROUPS["vehicle"]
+
+    def test_alerts_for_frame_honours_the_selected_classes(self):
+        dets = [
+            det("person", bbox=(450.0, 400.0, 480.0, 500.0)),
+            det("car", bbox=(600.0, 400.0, 780.0, 550.0)),
+            det("bus", bbox=(500.0, 350.0, 700.0, 450.0)),
+        ]
+        vehicles = alerts_for_frame(
+            dets, ZONE, 0, 24.0, "f.jpg", allowed_classes=CLASS_GROUPS["vehicle"]
+        )
+        people = alerts_for_frame(
+            dets, ZONE, 0, 24.0, "f.jpg", allowed_classes=CLASS_GROUPS["person"]
+        )
+        assert [a.class_name for a in vehicles] == ["car", "bus"]
+        assert [a.class_name for a in people] == ["person"]
+
+    def test_default_is_still_both(self):
+        # The sample clip path passes nothing and must behave as before.
+        dets = [det("person", bbox=(450.0, 400.0, 480.0, 500.0)), det("car", bbox=(600.0, 400.0, 780.0, 550.0))]
+        assert len(alerts_for_frame(dets, ZONE, 0, 24.0, "f.jpg")) == 2
+
+
+class TestWholeFrameZone:
+    def test_covers_the_frame_exactly(self):
+        z = whole_frame_zone(1920, 1080)
+        assert z.points == [(0.0, 0.0), (1920.0, 0.0), (1920.0, 1080.0), (0.0, 1080.0)]
+        assert (z.frame_width, z.frame_height) == (1920, 1080)
+
+    @pytest.mark.parametrize(
+        "bbox",
+        [
+            (0.0, 0.0, 10.0, 10.0),  # top-left corner
+            (1900.0, 900.0, 1920.0, 1080.0),  # cut off by the bottom-right edge
+            (900.0, 500.0, 1000.0, 1080.0),  # cut off by the bottom edge
+        ],
+    )
+    def test_any_detection_anywhere_in_frame_alerts(self, bbox):
+        # "Anywhere in frame" includes boxes clipped by the frame edge, whose
+        # anchor sits exactly on the bottom boundary.
+        z = whole_frame_zone(1920, 1080)
+        assert len(alerts_for_frame([det("person", bbox=bbox)], z, 0, 30.0, "f.jpg")) == 1
+
+
+class TestCountSampledFrames:
+    def test_matches_should_sample_exactly(self):
+        fps = 30000 / 1001
+        for frames, rate in [(120, None), (1800, 2.0), (1799, 2.0), (300, 1.0), (10, 60.0)]:
+            expected = sum(should_sample(i, fps, rate) for i in range(frames))
+            assert count_sampled_frames(frames, fps, rate) == expected
