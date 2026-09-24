@@ -81,3 +81,84 @@ export const processClip = (clipId: string) =>
   request<ProcessSummary>(`/clips/${clipId}/process`, { method: "POST" });
 
 export const getAlerts = (clipId: string) => request<AlertsResponse>(`/clips/${clipId}/alerts`);
+
+// --- uploads and jobs (Phase 1) ----------------------------------------------------
+
+export type ClassChoice = "person" | "vehicle" | "both";
+
+export interface UploadLimits {
+  max_bytes: number;
+  max_duration_s: number;
+  max_resolution: string;
+  max_fps: number;
+  classes: ClassChoice[];
+  sample_fps: number;
+  formats: string;
+}
+
+export interface Job {
+  job_id: string;
+  status: "queued" | "processing" | "complete" | "failed";
+  filename: string;
+  classes: ClassChoice;
+  clip: { width: number; height: number; fps: number; frame_count: number; duration_s: number };
+  zone: Zone;
+  sample_fps: number | null;
+  frames_to_process: number;
+  frames_processed: number;
+  queue_position: number;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  processing_time_s: number | null;
+  error: string | null;
+  status_url: string;
+  alerts_url: string;
+  reference_frame_url: string;
+}
+
+export const getUploadLimits = () => request<UploadLimits>("/uploads/limits");
+
+export const getJob = (jobId: string) => request<Job>(`/jobs/${jobId}`);
+
+export const getJobAlerts = (jobId: string) => request<AlertsResponse>(`/jobs/${jobId}/alerts`);
+
+/**
+ * Upload a clip. Uses XMLHttpRequest rather than fetch because fetch can't
+ * report upload progress, and a large file on a slow connection needs it.
+ */
+export function uploadClip(
+  file: File,
+  classes: ClassChoice,
+  onProgress: (fraction: number) => void,
+): Promise<Job> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("classes", classes);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", apiUrl("/uploads"));
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status === 202) {
+        resolve(xhr.response as Job);
+        return;
+      }
+      const detail = (xhr.response as { detail?: unknown } | null)?.detail;
+      const message =
+        typeof detail === "string"
+          ? detail
+          : Array.isArray(detail) // FastAPI validation errors
+            ? detail.map((d: { msg?: string }) => d.msg).join("; ")
+            : xhr.statusText || "upload failed";
+      reject(new ApiError(`${xhr.status}: ${message}`, xhr.status));
+    };
+    xhr.onerror = () =>
+      reject(new ApiError(`Couldn't reach the API at ${API_URL}. Is the backend running?`));
+    xhr.send(form);
+  });
+}

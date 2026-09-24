@@ -62,7 +62,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Protocol
 
@@ -79,9 +79,17 @@ logger = logging.getLogger(__name__)
 # "backpack", all above the detector's confidence threshold — is dropped
 # before the zone check. "bicycle" is deliberately absent: a ridden bicycle
 # comes with a detected "person", which already alerts.
-ALLOWED_CLASSES: frozenset[str] = frozenset(
-    {"person", "car", "truck", "bus", "motorcycle"}
-)
+PERSON_CLASSES: frozenset[str] = frozenset({"person"})
+VEHICLE_CLASSES: frozenset[str] = frozenset({"car", "truck", "bus", "motorcycle"})
+ALLOWED_CLASSES: frozenset[str] = PERSON_CLASSES | VEHICLE_CLASSES
+
+# What an uploader chooses between (Phase 1). The same list as above, split
+# in two — class selection exposes the existing filter, it adds no classes.
+CLASS_GROUPS: dict[str, frozenset[str]] = {
+    "person": PERSON_CLASSES,
+    "vehicle": VEHICLE_CLASSES,
+    "both": ALLOWED_CLASSES,
+}
 
 # Absorbs float error when a frame's clip time lands exactly on a sample
 # boundary (e.g. frame 3 of a 30 fps clip at 10 fps is t = 0.1 s exactly).
@@ -198,6 +206,7 @@ def alerts_for_frame(
     frame_index: int,
     clip_fps: float,
     snapshot: str,
+    allowed_classes: Iterable[str] = ALLOWED_CLASSES,
 ) -> list[Alert]:
     """Turn one frame's detections into alerts for those inside the zone.
 
@@ -207,7 +216,7 @@ def alerts_for_frame(
     """
     timestamp_s = frame_timestamp(frame_index, clip_fps)
     alerts: list[Alert] = []
-    for d in filter_allowed_classes(detections):
+    for d in filter_allowed_classes(detections, allowed_classes):
         anchor = anchor_point(d.bbox)
         if point_in_polygon(anchor, zone.points):
             alerts.append(
@@ -223,6 +232,27 @@ def alerts_for_frame(
                 )
             )
     return alerts
+
+
+def count_sampled_frames(frame_count: int, clip_fps: float, sample_fps: float | None) -> int:
+    """How many of `frame_count` frames `should_sample` picks (for progress)."""
+    return sum(should_sample(i, clip_fps, sample_fps) for i in range(frame_count))
+
+
+def whole_frame_zone(width: int, height: int, name: str = "Whole frame") -> Zone:
+    """A zone covering the entire frame: every allowed detection alerts.
+
+    The Phase 1 default for uploads, which have no drawn zone. Because the
+    boundary counts as inside, this includes boxes cut off by the frame
+    edge — so the anchor-clipping limitation can't change a verdict here.
+    """
+    w, h = float(width), float(height)
+    return Zone(
+        name=name,
+        frame_width=width,
+        frame_height=height,
+        points=[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)],
+    )
 
 
 def snapshot_filename(frame_index: int) -> str:
@@ -243,6 +273,8 @@ def process_clip(
     detector: FrameDetector,
     snapshot_dir: Path | str,
     sample_fps: float | None = None,
+    allowed_classes: Iterable[str] = ALLOWED_CLASSES,
+    on_progress: Callable[[int], None] | None = None,
 ) -> ClipResult:
     """Run a clip frame by frame and return every in-zone alert.
 
@@ -256,6 +288,10 @@ def process_clip(
             not written.
         sample_fps: Samples per second of clip time; None for every frame.
             See "Sampling-rate decision" in the module docstring.
+        allowed_classes: Which detected classes can alert (default: people
+            and vehicles). See `CLASS_GROUPS`.
+        on_progress: Called with the number of frames processed so far,
+            after each processed frame. For reporting only.
 
     Raises:
         FileNotFoundError: The clip doesn't exist.
@@ -317,9 +353,16 @@ def process_clip(
 
                 snapshot = snapshot_filename(frame_index)
                 frame_alerts = alerts_for_frame(
-                    detector.detect(frame), zone, frame_index, clip_fps, snapshot
+                    detector.detect(frame),
+                    zone,
+                    frame_index,
+                    clip_fps,
+                    snapshot,
+                    allowed_classes,
                 )
                 frames_processed += 1
+                if on_progress is not None:
+                    on_progress(frames_processed)
 
                 if frame_alerts:
                     _write_snapshot(snapshot_dir / snapshot, frame)

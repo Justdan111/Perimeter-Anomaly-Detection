@@ -1,4 +1,4 @@
-import { EDGE_TOLERANCE_FRACTION, zoneBottomMargin } from "@/lib/alerts";
+import { EDGE_TOLERANCE_FRACTION, isWholeFrameZone, zoneBottomMargin } from "@/lib/alerts";
 
 export const EDGE_EXPLANATION =
   "An alert's position is the bottom-centre of its box — where feet or tyres meet the " +
@@ -24,11 +24,24 @@ export function EdgeBadge({ label }: { label: string }) {
  */
 export function EdgeNote({
   points,
+  frameWidth,
   frameHeight,
 }: {
   points: [number, number][];
+  frameWidth: number;
   frameHeight: number;
 }) {
+  if (isWholeFrameZone(points, frameWidth, frameHeight)) {
+    // Every point in the frame is inside, the bottom edge included, so a
+    // box cut off by the edge can't change any verdict. The warning below
+    // ("reaches the bottom edge — may be misplaced") would be wrong here.
+    return (
+      <p className="rounded-md border border-line bg-panel px-3 py-2 text-sm">
+        The zone is the whole frame: every detected person or vehicle of the selected kind alerts,
+        wherever it is. (Uploads can&apos;t have a drawn zone yet.)
+      </p>
+    );
+  }
   const margin = zoneBottomMargin(points, frameHeight);
   const exposed = margin <= frameHeight * EDGE_TOLERANCE_FRACTION;
   return (
