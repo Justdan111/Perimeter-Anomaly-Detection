@@ -44,10 +44,10 @@ from pathlib import Path
 
 from app.models.schemas import ClipResult, Zone
 from app.services.clip_processor import (
-    CLASS_GROUPS,
     ClipReadError,
     FrameDetector,
     FrameSizeMismatchError,
+    classes_for,
     count_sampled_frames,
     process_clip,
 )
@@ -96,7 +96,7 @@ def snapshot_key(job_id: str, filename: str) -> str:
 class Job:
     job_id: str
     filename: str
-    classes: str
+    classes: list[str]  # the uploader's selection, e.g. ["person", "dog"]
     probe: ClipProbe
     zone: Zone
     sample_fps: float | None
@@ -144,7 +144,8 @@ class Job:
         return cls(
             job_id=record["job_id"],
             filename=record["filename"],
-            classes=record["classes"],
+            # Phase 1 stored one string ("person" | "vehicle" | "both").
+            classes=_normalise_classes(record["classes"]),
             probe=ClipProbe(**record["probe"]),
             zone=Zone.model_validate(record["zone"]),
             sample_fps=record["sample_fps"],
@@ -157,6 +158,12 @@ class Job:
             error=record["error"],
             processing_time_s=record["processing_time_s"],
         )
+
+
+def _normalise_classes(stored: str | list[str]) -> list[str]:
+    if isinstance(stored, str):
+        return ["person", "vehicle"] if stored == "both" else [stored]
+    return list(stored)
 
 
 def new_job_id() -> str:
@@ -255,7 +262,7 @@ class JobRunner:
         work_dir: Path,
         reference_frame: Path,
         filename: str,
-        classes: str,
+        classes: list[str],
         probe: ClipProbe,
         zone: Zone,
         sample_fps: float | None,
@@ -314,7 +321,7 @@ class JobRunner:
                         detector,
                         job.work_dir / "snapshots",
                         sample_fps=job.sample_fps,
-                        allowed_classes=CLASS_GROUPS[job.classes],
+                        allowed_classes=classes_for(job.classes),
                         on_progress=progress,
                     )
                     stored = self._save_results(job, result)
@@ -396,5 +403,8 @@ class JobRunner:
             self._jobs.pop(job_id, None)
             self._results.pop(job_id, None)
 
-    def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+    def shutdown(self, wait: bool = False) -> None:
+        """Stop taking work: queued jobs are cancelled; the running one is
+        left to finish (or waited for, with wait=True — tests use that so no
+        job outlives the fake storage it was started against)."""
+        self._executor.shutdown(wait=wait, cancel_futures=True)

@@ -83,7 +83,13 @@ def client(tmp_path, monkeypatch, detector, store):
     main.app.dependency_overrides[main.get_detector] = lambda: detector
     yield TestClient(main.app)
     main.app.dependency_overrides.clear()
-    runner.shutdown()
+    # Wait for any job still running. Some tests return before their job
+    # finishes (e.g. the one that only checks the immediate 202); without
+    # this, that job outlived the test — and moto's fake S3 — and made REAL
+    # requests to AWS, then held the shared model lock while retrying, which
+    # stalled the next test's job. Found as an intermittent segfault in the
+    # Docker test run (threads mid-TLS-handshake at interpreter exit).
+    runner.shutdown(wait=True)
 
 
 def upload(client, path=SAMPLE_CLIP, classes="both", filename="clip.mp4", data=None):
@@ -402,8 +408,10 @@ class TestUploadValidation:
         assert r.status_code == 422
         assert "resolution" in r.json()["detail"]
 
-    def test_invalid_class_choice_is_422(self, client):
-        assert upload(client, classes="bicycle").status_code == 422
+    @pytest.mark.parametrize("bad", ["giraffe", ["person", "carrot"]])
+    def test_invalid_class_choice_is_422(self, client, bad):
+        # ("bicycle" was the invalid example in Phase 1; it's selectable now.)
+        assert upload(client, classes=bad).status_code == 422
 
     def test_missing_file_is_422(self, client):
         assert client.post("/uploads", data={"classes": "both"}).status_code == 422
@@ -501,7 +509,9 @@ def test_limits_endpoint_reports_the_limits_actually_enforced(client, monkeypatc
     assert body["max_bytes"] == 5 * 1024 * 1024
     assert body["max_duration_s"] == 30.0
     assert body["max_resolution"] == "1920x1080"
-    assert body["classes"] == ["person", "vehicle", "both"]
+    assert body["classes"] == [
+        "person", "vehicle", "bicycle", "dog", "cat", "backpack", "handbag", "suitcase",
+    ]
     assert body["sample_fps"] == main.UPLOAD_SAMPLE_FPS
 
 
@@ -623,3 +633,55 @@ def test_snapshots_are_uploaded_in_parallel(client, store, monkeypatch):
     assert status["status"] == "complete"
     saving = status["finished_at"] - status["started_at"] - status["processing_time_s"]
     assert saving < 1.2, f"saving 10 snapshots took {saving:.2f}s — not parallel"
+
+
+
+# --- Phase 2: more classes, colour on every alert ---------------------------------------------
+
+
+class PersonCarDogDetector(PersonAndCarDetector):
+    def detect(self, frame):
+        return super().detect(frame) + [
+            Detection(class_name="dog", confidence=0.7, bbox=(900.0, 500.0, 1000.0, 600.0)),
+        ]
+
+
+class TestPhase2:
+    def test_several_classes_can_be_selected_at_once(self, client, monkeypatch):
+        main.app.dependency_overrides[main.get_detector] = lambda: PersonCarDogDetector()
+        body = upload(client, classes=["person", "dog"]).json()
+        assert body["classes"] == ["person", "dog"]
+        wait_for(client, body["job_id"])
+        alerts = client.get(f"/jobs/{body['job_id']}/alerts").json()["alerts"]
+        assert {a["class_name"] for a in alerts} == {"person", "dog"}  # no car, no handbag
+
+    def test_every_alert_carries_its_colour(self, client):
+        job_id = upload(client).json()["job_id"]
+        wait_for(client, job_id)
+        alerts = client.get(f"/jobs/{job_id}/alerts").json()["alerts"]
+        people = [a for a in alerts if a["class_name"] == "person"]
+        cars = [a for a in alerts if a["class_name"] == "car"]
+        assert people and cars
+        assert all(a["upper_color"] and a["lower_color"] and a["color"] is None for a in people)
+        assert all(a["color"] and a["upper_color"] is None for a in cars)
+
+    def test_a_phase1_job_record_without_colours_still_loads(self, client, store, tmp_path, monkeypatch):
+        # Phase 1 stored classes as one string and alerts with no colour
+        # fields. Such records are still in R2 (for 7 days) and must render.
+        job_id = upload(client, classes="vehicle").json()["job_id"]
+        wait_for(client, job_id)
+        record = store.get_json(f"jobs/{job_id}/job.json")
+        record["classes"] = "vehicle"
+        store.put_json(f"jobs/{job_id}/job.json", record)
+        result = store.get_json(f"jobs/{job_id}/result.json")
+        for a in result["alerts"]:
+            for k in ("color", "upper_color", "lower_color"):
+                a.pop(k, None)
+        store.put_json(f"jobs/{job_id}/result.json", result)
+
+        monkeypatch.setattr(main, "jobs", make_runner(store, tmp_path))  # fresh process
+        status = client.get(f"/jobs/{job_id}").json()
+        assert status["status"] == "complete"
+        assert status["classes"] == ["vehicle"]
+        alerts = client.get(f"/jobs/{job_id}/alerts").json()["alerts"]
+        assert alerts and all(a["color"] is None for a in alerts)

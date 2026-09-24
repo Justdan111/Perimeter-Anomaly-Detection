@@ -22,11 +22,20 @@ import { ZonePanel } from "./ZonePanel";
 
 const POLL_MS = 1500;
 
-const CLASS_LABELS: Record<ClassChoice, string> = {
+// Display names only; the list of choices comes from the server
+// (GET /uploads/limits), so the form can't offer a class it would refuse.
+const CLASS_LABELS: Record<string, string> = {
   person: "People",
   vehicle: "Vehicles",
-  both: "Both",
+  bicycle: "Bicycles",
+  dog: "Dogs",
+  cat: "Cats",
+  backpack: "Backpacks",
+  handbag: "Handbags",
+  suitcase: "Suitcases",
 };
+const classLabel = (c: string) => CLASS_LABELS[c] ?? c;
+const DEFAULT_CLASSES: ClassChoice[] = ["person", "vehicle"];
 
 function setJobInUrl(jobId: string | null) {
   const url = new URL(window.location.href);
@@ -38,7 +47,11 @@ function setJobInUrl(jobId: string | null) {
 export function UploadClip({ initialJobId }: { initialJobId: string | null }) {
   const [limits, setLimits] = useState<UploadLimits | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [classes, setClasses] = useState<ClassChoice>("both");
+  const [classes, setClasses] = useState<ClassChoice[]>(DEFAULT_CLASSES);
+  const toggleClass = (choice: ClassChoice) =>
+    setClasses((current) =>
+      current.includes(choice) ? current.filter((c) => c !== choice) : [...current, choice],
+    );
   const [uploadFraction, setUploadFraction] = useState<number | null>(null);
   const [uploadSince, setUploadSince] = useState<number | null>(null);
   // From ?job=... (read on the server): a reload resumes the same job.
@@ -173,24 +186,25 @@ export function UploadClip({ initialJobId }: { initialJobId: string | null }) {
               <fieldset className="space-y-1.5 text-sm" disabled={uploading}>
                 <legend className="font-medium">Alert on</legend>
                 <div className="flex flex-wrap gap-2">
-                  {(["person", "vehicle", "both"] as const).map((choice) => (
+                  {(limits?.classes ?? DEFAULT_CLASSES).map((choice) => (
                     <label
                       key={choice}
                       className="flex cursor-pointer items-center gap-2 rounded-md border border-line bg-background px-3 py-1.5 has-checked:border-foreground"
                     >
                       <input
-                        type="radio"
+                        type="checkbox"
                         name="classes"
                         value={choice}
-                        checked={classes === choice}
-                        onChange={() => setClasses(choice)}
+                        checked={classes.includes(choice)}
+                        onChange={() => toggleClass(choice)}
                       />
-                      {CLASS_LABELS[choice]}
+                      {classLabel(choice)}
                     </label>
                   ))}
                 </div>
                 <p className="text-xs text-muted">
-                  People = person; vehicles = car, truck, bus, motorcycle.
+                  Vehicles = car, truck, bus, motorcycle. Each alert also records a colour
+                  (vehicles and objects) or top and bottom clothing colours (people).
                 </p>
               </fieldset>
 
@@ -205,7 +219,7 @@ export function UploadClip({ initialJobId }: { initialJobId: string | null }) {
 
               <button
                 type="submit"
-                disabled={!file || !limits || uploading}
+                disabled={!file || !limits || uploading || classes.length === 0}
                 className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {uploading ? "Uploading…" : "Upload and process"}
@@ -223,7 +237,10 @@ export function UploadClip({ initialJobId }: { initialJobId: string | null }) {
               />
               <p className="text-sm text-muted">
                 {job.filename} · {job.clip.duration_s.toFixed(1)} s · {job.clip.width}×{job.clip.height}{" "}
-                · alerting on {CLASS_LABELS[job.classes].toLowerCase()}
+                · alerting on{" "}
+                {(Array.isArray(job.classes) ? job.classes : [job.classes])
+                  .map((c) => classLabel(c).toLowerCase())
+                  .join(", ")}
               </p>
             </>
           )}

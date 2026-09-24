@@ -70,6 +70,7 @@ import cv2
 import numpy as np
 
 from app.models.schemas import Alert, ClipResult, Detection, Point, Zone
+from app.services.colors import clothing_colors, dominant_color, is_monochrome
 from app.services.zone_check import point_in_polygon
 
 logger = logging.getLogger(__name__)
@@ -83,13 +84,41 @@ PERSON_CLASSES: frozenset[str] = frozenset({"person"})
 VEHICLE_CLASSES: frozenset[str] = frozenset({"car", "truck", "bus", "motorcycle"})
 ALLOWED_CLASSES: frozenset[str] = PERSON_CLASSES | VEHICLE_CLASSES
 
-# What an uploader chooses between (Phase 1). The same list as above, split
-# in two — class selection exposes the existing filter, it adds no classes.
+# What an uploader chooses between. Phase 1 split the list above in two;
+# Phase 2 adds more of the 80 COCO classes YOLO26-N already detects — no new
+# detection logic, just exposing more of it. The *default* (ALLOWED_CLASSES,
+# used by the sample clip) is unchanged: on the sample clip a handbag in the
+# zone must not become an intrusion alert (Day 2).
 CLASS_GROUPS: dict[str, frozenset[str]] = {
     "person": PERSON_CLASSES,
     "vehicle": VEHICLE_CLASSES,
-    "both": ALLOWED_CLASSES,
+    "bicycle": frozenset({"bicycle"}),
+    "dog": frozenset({"dog"}),
+    "cat": frozenset({"cat"}),
+    "backpack": frozenset({"backpack"}),
+    "handbag": frozenset({"handbag"}),
+    "suitcase": frozenset({"suitcase"}),
 }
+SELECTABLE_CLASSES: tuple[str, ...] = tuple(CLASS_GROUPS)
+_LEGACY_CHOICES = {"both": ("person", "vehicle")}  # Phase 1 job records
+
+
+def classes_for(selection: Iterable[str] | str) -> frozenset[str]:
+    """Detector classes for an uploader's selection (e.g. ["person", "dog"]).
+
+    Accepts Phase 1's stored values too ("person" | "vehicle" | "both").
+    """
+    if isinstance(selection, str):
+        selection = [selection]
+    keys: list[str] = []
+    for choice in selection:
+        keys.extend(_LEGACY_CHOICES.get(choice, (choice,)))
+    if not keys:
+        raise ValueError("choose at least one class")
+    unknown = [k for k in keys if k not in CLASS_GROUPS]
+    if unknown:
+        raise ValueError(f"unknown class choice(s): {', '.join(unknown)}")
+    return frozenset().union(*(CLASS_GROUPS[k] for k in keys))
 
 # Absorbs float error when a frame's clip time lands exactly on a sample
 # boundary (e.g. frame 3 of a 30 fps clip at 10 fps is t = 0.1 s exactly).
@@ -234,6 +263,40 @@ def alerts_for_frame(
     return alerts
 
 
+def add_colors(alerts: list[Alert], frame: np.ndarray) -> list[Alert]:
+    """Each alert with its colour, read from its box in the raw frame.
+
+    Runs on the full-resolution frame, before the (downscaled) snapshot is
+    written — never on a snapshot fetched back from storage. People get upper
+    and lower clothing colours; everything else gets one dominant colour.
+    """
+    if not alerts:
+        return alerts
+    height, width = frame.shape[:2]
+    # A black-and-white frame (infrared night mode) has no colour to read:
+    # say "unknown" rather than calling everything gray.
+    if is_monochrome(frame):
+        return [
+            a.model_copy(update={"upper_color": "unknown", "lower_color": "unknown"})
+            if a.class_name in PERSON_CLASSES
+            else a.model_copy(update={"color": "unknown"})
+            for a in alerts
+        ]
+    coloured: list[Alert] = []
+    for a in alerts:
+        x1, y1, x2, y2 = a.bbox
+        crop = frame[
+            max(0, int(y1)) : min(height, int(round(y2))),
+            max(0, int(x1)) : min(width, int(round(x2))),
+        ]
+        if a.class_name in PERSON_CLASSES:
+            upper, lower = clothing_colors(crop)
+            coloured.append(a.model_copy(update={"upper_color": upper, "lower_color": lower}))
+        else:
+            coloured.append(a.model_copy(update={"color": dominant_color(crop)}))
+    return coloured
+
+
 def count_sampled_frames(frame_count: int, clip_fps: float, sample_fps: float | None) -> int:
     """How many of `frame_count` frames `should_sample` picks (for progress)."""
     return sum(should_sample(i, clip_fps, sample_fps) for i in range(frame_count))
@@ -360,6 +423,9 @@ def process_clip(
                     snapshot,
                     allowed_classes,
                 )
+                # Colour from the raw frame, in this same pass, before the
+                # snapshot is written (and later uploaded).
+                frame_alerts = add_colors(frame_alerts, frame)
                 frames_processed += 1
                 if on_progress is not None:
                     on_progress(frames_processed)

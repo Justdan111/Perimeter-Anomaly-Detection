@@ -31,7 +31,7 @@ from pathlib import PurePosixPath
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import cv2
 
@@ -45,7 +45,9 @@ from app.models.schemas import Alert, ClipResult, Zone
 from app.services.clip_processor import (
     ClipReadError,
     FrameDetector,
+    SELECTABLE_CLASSES,
     FrameSizeMismatchError,
+    classes_for,
     load_zone,
     process_clip,
     whole_frame_zone,
@@ -305,7 +307,7 @@ class JobResponse(BaseModel):
     job_id: str
     status: JobState
     filename: str = Field(description="The uploaded file's name, for display only.")
-    classes: str
+    classes: list[str] = Field(description='What alerts, e.g. ["person", "dog"].')
     clip: ClipInfoOut
     zone: Zone
     sample_fps: float | None
@@ -532,7 +534,7 @@ def upload_limits() -> UploadLimitsResponse:
         max_duration_s=UPLOAD_LIMITS.max_duration_s,
         max_resolution=f"{UPLOAD_LIMITS.max_long_side}x{UPLOAD_LIMITS.max_short_side}",
         max_fps=UPLOAD_LIMITS.max_fps,
-        classes=["person", "vehicle", "both"],
+        classes=list(SELECTABLE_CLASSES),
         sample_fps=UPLOAD_SAMPLE_FPS,
         formats="MP4/MOV, WebM/MKV, AVI, MPEG-TS",
     )
@@ -542,8 +544,13 @@ def upload_limits() -> UploadLimitsResponse:
 def create_upload(
     file: Annotated[UploadFile, File(description="The video clip.")],
     classes: Annotated[
-        Literal["person", "vehicle", "both"],
-        Form(description="What to alert on: people, vehicles, or both."),
+        list[str],
+        Form(
+            description=(
+                "What to alert on; repeat the field for several: person, vehicle, "
+                "bicycle, dog, cat, backpack, handbag, suitcase."
+            )
+        ),
     ],
     detector: Annotated[FrameDetector, Depends(get_detector)],
 ) -> JobResponse:
@@ -556,6 +563,13 @@ def create_upload(
     """
     if storage_error is not None:
         raise HTTPException(503, f"result storage is unavailable, so uploads are disabled ({storage_error})")
+    # "both" (Phase 1's choice) still accepted; stored as what it means.
+    selection = [c for choice in classes for c in (["person", "vehicle"] if choice == "both" else [choice])]
+    try:
+        classes_for(selection)
+    except ValueError as e:
+        raise HTTPException(422, f"{e}; choose from: {', '.join(SELECTABLE_CLASSES)}") from e
+    selection = list(dict.fromkeys(selection))  # de-duplicate, keep order
     if jobs.active_count() >= jobs.max_active:
         raise HTTPException(429, _busy_message())
 
@@ -583,7 +597,7 @@ def create_upload(
                 # Display only: never used to build a path.
                 filename=PurePosixPath((file.filename or "upload").replace("\\", "/")).name[:120]
                 or "upload",
-                classes=classes,
+                classes=selection,
                 probe=probe,
                 zone=whole_frame_zone(probe.width, probe.height),
                 sample_fps=UPLOAD_SAMPLE_FPS,

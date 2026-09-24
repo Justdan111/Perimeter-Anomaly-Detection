@@ -6,10 +6,19 @@ returns — downstream code works with that, never with an Ultralytics `Results`
 object, so swapping the model out later touches exactly one file.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 # A point in frame pixel coordinates: x right, y down (OpenCV convention).
 Point = tuple[float, float]
+
+# Dominant-colour names (app/services/colors.py). "mixed" = no colour clearly
+# dominates; "unknown" = too small to judge.
+ColorName = Literal[
+    "black", "white", "gray", "red", "orange", "yellow",
+    "green", "blue", "purple", "pink", "brown", "mixed", "unknown",
+]
 
 
 class Zone(BaseModel):
@@ -136,6 +145,18 @@ class Alert(BaseModel):
         )
     )
     zone_name: str = Field(description="Name of the zone the anchor fell inside.")
+    # Phase 2. Optional so that alerts recorded before colour extraction
+    # existed (Phase 1 results in R2) still load: missing means "not recorded".
+    color: ColorName | None = Field(
+        default=None,
+        description="Dominant colour of a vehicle or object (not set for people).",
+    )
+    upper_color: ColorName | None = Field(
+        default=None, description="A person's upper-body clothing colour."
+    )
+    lower_color: ColorName | None = Field(
+        default=None, description="A person's lower-body clothing colour."
+    )
     snapshot: str = Field(
         description=(
             "Filename of a downscaled (max 640 px wide), unannotated JPEG of the "

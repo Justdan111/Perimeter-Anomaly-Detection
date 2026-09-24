@@ -1,0 +1,220 @@
+[
+ {
+  "file": "vehicle_heldout_00.jpg",
+  "kind": "vehicle",
+  "color": [
+   "gray",
+   "white"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_01.jpg",
+  "kind": "vehicle",
+  "color": [
+   "gray"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_06.jpg",
+  "kind": "vehicle",
+  "color": [
+   "black"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_08.jpg",
+  "kind": "vehicle",
+  "color": [
+   "gray",
+   "white"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_14.jpg",
+  "kind": "vehicle",
+  "color": [
+   "black"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_16.jpg",
+  "kind": "vehicle",
+  "color": [
+   "black"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_26.jpg",
+  "kind": "vehicle",
+  "color": [
+   "black"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_28.jpg",
+  "kind": "vehicle",
+  "color": [
+   "white",
+   "gray"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_12.jpg",
+  "kind": "vehicle",
+  "color": [
+   "blue",
+   "black"
+  ]
+ },
+ {
+  "file": "vehicle_heldout_02.jpg",
+  "kind": "vehicle",
+  "color": [
+   "gray",
+   "blue"
+  ]
+ },
+ {
+  "file": "person_heldout_01.jpg",
+  "kind": "person",
+  "upper": [
+   "white"
+  ],
+  "lower": [
+   "black"
+  ]
+ },
+ {
+  "file": "person_heldout_04.jpg",
+  "kind": "person",
+  "upper": [
+   "black"
+  ],
+  "lower": [
+   "black"
+  ]
+ },
+ {
+  "file": "person_heldout_12.jpg",
+  "kind": "person",
+  "upper": [
+   "blue"
+  ],
+  "lower": [
+   "blue",
+   "gray"
+  ]
+ },
+ {
+  "file": "person_heldout_19.jpg",
+  "kind": "person",
+  "upper": [
+   "white"
+  ],
+  "lower": [
+   "black"
+  ],
+  "known_wrong": {
+   "part": "lower",
+   "why": "black trousers in strong sun still read gray (V above 110)"
+  }
+ },
+ {
+  "file": "person_heldout_39.jpg",
+  "kind": "person",
+  "upper": [
+   "green"
+  ],
+  "lower": [
+   "blue",
+   "gray"
+  ]
+ },
+ {
+  "file": "person_heldout_08.jpg",
+  "kind": "person",
+  "upper": [
+   "red"
+  ],
+  "lower": [
+   "pink",
+   "red"
+  ]
+ },
+ {
+  "file": "person_heldout_23.jpg",
+  "kind": "person",
+  "upper": [
+   "white"
+  ],
+  "lower": [
+   "purple",
+   "black"
+  ]
+ },
+ {
+  "file": "person_heldout_37.jpg",
+  "kind": "person",
+  "upper": [
+   "black"
+  ],
+  "lower": [
+   "blue",
+   "gray"
+  ]
+ },
+ {
+  "file": "person_heldout_14.jpg",
+  "kind": "person",
+  "upper": null,
+  "lower": [
+   "black"
+  ],
+  "known_wrong": {
+   "part": "lower",
+   "why": "black trousers in strong sun still read gray (V above 110)"
+  }
+ },
+ {
+  "file": "person_heldout_29.jpg",
+  "kind": "person",
+  "upper": [
+   "black"
+  ],
+  "lower": null,
+  "known_wrong": {
+   "part": "upper",
+   "why": "skin and a bag dominate the upper region of a sleeveless top"
+  }
+ },
+ {
+  "file": "person_heldout_03.jpg",
+  "kind": "person",
+  "upper": [
+   "white",
+   "pink"
+  ],
+  "lower": null,
+  "guards": "hair would read as black if the head were included"
+ },
+ {
+  "file": "person_heldout_20.jpg",
+  "kind": "person",
+  "upper": [
+   "green"
+  ],
+  "lower": null,
+  "guards": "hair would read as black if the head were included"
+ },
+ {
+  "file": "person_tuning_22.jpg",
+  "kind": "person",
+  "upper": [
+   "black"
+  ],
+  "lower": [
+   "black"
+  ],
+  "guards": "light ground would read as white if the feet were included"
+ }
+]
