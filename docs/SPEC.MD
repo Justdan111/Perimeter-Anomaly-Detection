@@ -1,6 +1,6 @@
 # Perimeter Anomaly Detection — Product Specification
 
-**Status:** Not yet started (Day 1 next)
+**Status:** MVP complete and deployed (Days 1–5). Live camera support (Day 6) is planned, not built.
 **Owner:** Dan
 **Stack:** Python/FastAPI (uv-managed), Pydantic, pytest, Docker, Next.js
 
@@ -172,4 +172,24 @@ PROJECT.md's Day 6 section for the concrete plan — deferred on purpose, not fo
   a missing feature nobody thought about
 
 ## 12. Current status
-Not yet started. Day 1 next: backend skeleton, model loading, zone-as-data, first tests.
+**MVP complete and deployed** (as of 2026-09-24, end of Day 5).
+
+- Frontend: https://perimeter-anomaly-detection.vercel.app
+- Backend: https://perimeter-backend-ax3a.onrender.com (Docker on Render free tier)
+
+Against the section 11 success criteria:
+- Pipeline on the sample clip produces a hand-verified alert list (Day 2:
+  entry/exit timestamps checked frame by frame). Platform differences are
+  borderline cases only — see README, "Results differ slightly between
+  platforms".
+- `zone_check.py` has had unit tests since Day 1; the backend suite is 139
+  tests, mutation-checked, and also runs inside the Docker image.
+- The dashboard shows grouped alerts with snapshots and the zone overlay,
+  verified against the deployed URLs.
+- Deployed inference measured on Render's free tier: 64–70 s for the sample
+  clip, synchronous, well inside Render's documented 100-minute response limit.
+- README states the AGPL-3.0 implication, the lack of academic-dataset
+  benchmarking, and live camera support as a future direction.
+
+Not built, by design: live camera input (Day 6 plan in PROJECT.md), clip
+upload, cross-frame tracking.
