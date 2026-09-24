@@ -287,6 +287,7 @@ class TestHealth:
             "model_loaded": True,
             "model_weights": "yolo26n.pt",
             "model_error": None,
+            "inference_threads": None,  # the stub doesn't report one
         }
 
     def test_health_reports_a_model_that_failed_to_load(self, boot):

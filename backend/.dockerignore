@@ -1,0 +1,13 @@
+# Rebuilt inside the image from uv.lock.
+.venv/
+# Downloaded during the build instead (see Dockerfile).
+models/
+# Runtime output, caches.
+output/
+**/__pycache__/
+*.py[oc]
+.pytest_cache/
+.coverage
+.ruff_cache/
+Dockerfile
+.dockerignore
