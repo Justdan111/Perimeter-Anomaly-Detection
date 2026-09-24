@@ -1,6 +1,6 @@
 # Perimeter Anomaly Detection — Product Specification
 
-**Status:** MVP complete and deployed (Days 1–5). Live camera support (Day 6) is planned, not built.
+**Status:** MVP complete and deployed (Days 1–5); Phase 1 (upload + class selection, results in R2) built and deployed. Live camera input is Phase 3.
 **Owner:** Dan
 **Stack:** Python/FastAPI (uv-managed), Pydantic, pytest, Docker, Next.js
 

@@ -4,9 +4,11 @@ Detects people and vehicles in a recorded video clip and raises a timestamped
 alert, with a snapshot, whenever one is inside a configured zone — so a person
 reviews the moments that matter instead of hours of footage.
 
-**Live demo:** https://perimeter-anomaly-detection.vercel.app — press
-*Process clip* and expect to wait about **70 seconds** (see
-[Processing time](#processing-time--measured-not-assumed)).
+**Live demo:** https://perimeter-anomaly-detection.vercel.app — upload your
+own clip (up to 60 s), choose people, vehicles or both, and get back
+timestamped alerts with snapshots; or run the built-in sample clip. Expect
+about **1 minute for a 20 s clip and 4 minutes for a 1-minute 1080p clip**
+(see [Uploads](#uploads--limits-and-measured-timing)).
 Backend: https://perimeter-backend-ax3a.onrender.com/health
 
 ![Demo: processing the sample clip on the deployed site, then reviewing alerts](docs/demo/deployed-demo.gif)
@@ -33,13 +35,73 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
   royalty-free (CC0) street clip, chosen to avoid the registration friction of
   datasets like i-LIDS or VIRAT. That is a deliberate scope decision, not an
   oversight — and it means this project makes **no accuracy claims**.
-- **No clip upload.** The MVP works against the one committed sample clip.
+- **No long videos.** Uploads are limited to 60 s (see
+  [Uploads](#uploads--limits-and-measured-timing) for why, and what longer
+  would take).
+- **No drawn zones for uploads.** An uploaded clip is watched across the whole
+  frame; there is no zone editor yet. Only the sample clip has a drawn zone.
+- **No colour, clothing or vehicle-type filters** (Phase 2), and **no licence
+  plate recognition** (not planned).
 - **Only people and vehicles.** The model can see 80 object types; alerts are
   deliberately limited to `person`, `car`, `truck`, `bus` and `motorcycle`
   (everything else — traffic lights, handbags — is dropped before the zone
   check).
 - **No tracking across frames**, and **no identification** of who someone is:
   it only ever answers "something entered the zone".
+
+## Uploads — limits and measured timing
+
+Upload a clip, choose **people**, **vehicles** (car, truck, bus, motorcycle)
+or **both**, and the whole frame is watched. Processing runs as a background
+job: the upload returns a job id immediately and the dashboard polls for
+progress (`queued` → `processing` → `complete` / `failed`). The page URL
+carries the job id (`?job=…`), so it can be reloaded or come back to later.
+
+**Limits** (enforced by the server, published at `GET /uploads/limits`):
+100 MB, 60 s, up to 1920×1080 in either orientation, up to 60 fps; MP4/MOV,
+WebM/MKV, AVI or MPEG-TS. Uploads are checked at **2 frames per second of
+video** (the sample clip checks every frame) — a walking person moves about
+0.7 m between checks, so entries into view are still caught.
+
+**Measured on the deployed site** (Render free tier + R2, 2026-09-24):
+
+| Clip | Upload* | Processing | Saving results | Upload to results |
+|---|---|---|---|---|
+| 20 s, 720p, 9.3 MB | 14.7 s | 38.8 s | 5.7 s | **61.5 s** |
+| 56 s, 1080p, 72.7 MB | 94.7 s | 147.2 s | 9.1 s | **253.1 s (4.2 min)** |
+
+\*Upload time is the uploader's connection (here ~6–9 Mbit/s up; the same
+72.7 MB file took 67–95 s across runs).
+
+Processing costs roughly **2–2.75 s per second of video** on the free tier,
+at 2 checks per second. So longer videos are possible in principle but not
+practical here: a 5-minute 1080p clip would take ~14 minutes, an hour ~2.75
+hours — and a long job blocks everyone else's (there is one worker), the
+free instance can go to sleep mid-job if nobody is watching it, and a busy
+hour would produce tens of thousands of alerts. Raising the limit to a few
+minutes is realistic; an hour needs a different architecture (direct-to-R2
+uploads, a separate resumable worker, paid compute).
+
+**Validation** — each of these fails clearly, and leaves nothing behind:
+not a video (checked from the file's first bytes: OpenCV alone would open a
+JPEG or GIF) → `415`; over 100 MB → `413`; unreadable, too long, too
+high/low resolution or frame rate → `422` with the numbers; damage further
+into the file (a truncated upload) → the job fails with the reason. The
+dashboard also checks size and type before uploading, so an oversized file is
+refused instantly rather than after a long upload (the host receives the
+whole request before the server can refuse it — measured).
+
+**Storage.** Render's free tier has no persistent disk: the filesystem is
+wiped on every restart, redeploy and idle spin-down. So job records, alerts,
+snapshots and the reference frame are kept in **Cloudflare R2**; the uploaded
+video itself exists only on the server's disk while its job runs. Snapshots
+are served as **signed links that expire after 6 hours**; the bucket is
+private. Finished jobs survive restarts (verified by redeploying mid-test); a
+job cut off by a restart is reported as failed with that reason. Results are
+deleted after **7 days** by a lifecycle rule on the bucket.
+
+**Privacy.** There are no accounts. A job's results are visible to anyone who
+has its link (the id is 128 random bits, so it can't be guessed), for 7 days.
 
 ## License — AGPL-3.0, and what it means
 
@@ -160,14 +222,23 @@ requests return `503` with the same message.
   weights baked in at build time, so a cold start never downloads them.
 - **Frontend — Vercel**, Root Directory `frontend`, env `NEXT_PUBLIC_API_URL`
   set to the Render URL before the build.
-- Results are kept in memory: a restart or redeploy (or the free instance
-  spinning down) forgets the last run, and the dashboard shows "not processed
-  yet" until someone presses the button again.
+- **Upload results — Cloudflare R2**: a private bucket with a lifecycle rule
+  deleting objects after 7 days, and an API token with Object Read & Write on
+  that bucket only. On Render, set `PERIMETER_R2_ENDPOINT`
+  (`https://<account-id>.r2.cloudflarestorage.com`), `PERIMETER_R2_BUCKET`,
+  `PERIMETER_R2_ACCESS_KEY_ID` and `PERIMETER_R2_SECRET_ACCESS_KEY`. All four
+  or none: a partial set is refused at startup. Without them the server keeps
+  results on local disk (development only — they don't survive a restart).
+  `/health` reports which is in use (`"storage": "r2"`) and, if the bucket
+  isn't reachable, why — in which case uploads return `503`.
+- The **sample clip**'s last result is kept in memory only: a restart forgets
+  it, and the dashboard shows "not processed yet" until someone presses the
+  button again.
 
 ## Tests
 
 ```sh
-cd backend && uv run pytest        # 139 tests; no model weights needed
+cd backend && uv run pytest        # 268 tests; no model weights, no bucket needed
 cd frontend && npm test            # alert grouping logic
 
 # Inside the Docker image, as its non-root user:
@@ -188,6 +259,8 @@ the image runs as a non-root user (inside it, all tests run).
   bottom-centre of each box; for a box cut off by the frame edge, that point
   sits on the edge rather than at the object's real feet. The dashboard flags
   affected alerts and warns when a zone reaches the bottom edge.
-- **~70 s per run on the free tier**, synchronous — fine for this clip, not
-  for long footage (see above).
+- **Slow on the free tier**: ~70 s for the 5 s sample clip (checked every
+  frame), about 1 minute of processing per 20–25 s of uploaded video.
+- **One upload processed at a time**; up to 3 can wait, a 4th gets "busy,
+  try again".
 - **One committed sample clip**; not benchmarked against an academic dataset.
