@@ -43,17 +43,23 @@ export interface AlertsResponse {
 }
 
 export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status?: number,
-  ) {
+  // A plain field rather than a constructor parameter property: Node's
+  // type-stripping (used by `npm test`) doesn't support parameter properties.
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
+    this.status = status;
   }
 }
 
-/** Absolute URL for a path the API returned (snapshot_url, reference_frame_url). */
+/**
+ * Absolute URL for a path or URL the API returned (snapshot_url,
+ * reference_frame_url). Upload results on R2 come back as complete, signed
+ * links and are used untouched; everything else is a path on the API.
+ */
 export function apiUrl(path: string): string {
-  return `${API_URL}${path}`;
+  return /^https?:\/\//.test(path) ? path : `${API_URL}${path}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

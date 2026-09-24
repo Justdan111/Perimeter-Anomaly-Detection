@@ -12,15 +12,19 @@ job processes exactly 10 frames.
 import threading
 import time
 
+import boto3
 import numpy as np
 import pytest
+from botocore.config import Config
 from fastapi.testclient import TestClient
+from moto import mock_aws
 
 from app import main
 from app.models.schemas import Detection
 from app.services import jobs as jobs_module
 from app.services import uploads
 from app.services.clip_processor import count_sampled_frames
+from app.services.storage import LocalObjectStore, S3ObjectStore
 
 SAMPLE_CLIP = main.CLIPS["sample"].clip_path
 FRAMES_PER_JOB = count_sampled_frames(120, 24000 / 1001, main.UPLOAD_SAMPLE_FPS)
@@ -47,11 +51,34 @@ def detector():
     return PersonAndCarDetector()
 
 
+BUCKET = "perimeter-test"
+
+
+@pytest.fixture(params=["local", "r2"])
+def store(request, tmp_path):
+    """Every test here runs against both stores: a local folder, and R2
+    (via moto, an in-memory fake of the S3 API R2 implements)."""
+    if request.param == "local":
+        yield LocalObjectStore(tmp_path / "output" / "store")
+        return
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1", config=Config(signature_version="s3v4"))
+        s3.create_bucket(Bucket=BUCKET)
+        yield S3ObjectStore(client=s3, bucket=BUCKET)
+
+
+def make_runner(store, tmp_path):
+    return jobs_module.JobRunner(
+        model_lock=main._processing_lock, store=store, work_root=tmp_path / "output" / "work"
+    )
+
+
 @pytest.fixture
-def client(tmp_path, monkeypatch, detector):
+def client(tmp_path, monkeypatch, detector, store):
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "output")
     monkeypatch.setattr(main, "_results", {})
-    runner = jobs_module.JobRunner(model_lock=main._processing_lock)
+    monkeypatch.setattr(main, "storage_error", None)
+    runner = make_runner(store, tmp_path)
     monkeypatch.setattr(main, "jobs", runner)
     main.app.dependency_overrides[main.get_detector] = lambda: detector
     yield TestClient(main.app)
@@ -78,9 +105,30 @@ def wait_for(client, job_id, states=("complete", "failed"), timeout=20):
     raise AssertionError(f"job {job_id} never reached {states}; last: {body}")
 
 
-def job_files(tmp_path):
-    root = tmp_path / "output" / "jobs"
+def work_files(tmp_path):
+    """Files in the local work folder (uploaded videos while their job runs)."""
+    root = tmp_path / "output" / "work"
     return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) if root.exists() else []
+
+
+def stored_keys(store):
+    """Every object in the result store, as keys."""
+    if isinstance(store, LocalObjectStore):
+        root = store.root
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) if root.exists() else []
+    listing = store._client.list_objects_v2(Bucket=store.bucket)
+    return sorted(o["Key"] for o in listing.get("Contents", []))
+
+
+def fetch(client, url):
+    """GET a snapshot/reference URL: an API route locally, a signed link on R2."""
+    if url.startswith("https://"):
+        # moto intercepts requests to the (fake) bucket host, so a signed
+        # link can be fetched as the browser would.
+        import requests
+
+        return requests.get(url, timeout=10)
+    return client.get(url)
 
 
 # --- the happy path ----------------------------------------------------------------------
@@ -126,28 +174,41 @@ class TestUploadToResults:
         alerts = client.get(f"/jobs/{job_id}/alerts").json()["alerts"]
         assert {a["class_name"] for a in alerts} == expected
 
-    def test_snapshots_and_reference_frame_are_served(self, client):
+    def test_snapshots_and_reference_frame_are_served(self, client, store):
         job_id = upload(client).json()["job_id"]
         status = wait_for(client, job_id)
-        ref = client.get(status["reference_frame_url"])
+        ref = fetch(client, status["reference_frame_url"])
         assert ref.status_code == 200 and ref.headers["content-type"] == "image/jpeg"
         alerts = client.get(f"/jobs/{job_id}/alerts").json()["alerts"]
-        snap = client.get(alerts[0]["snapshot_url"])
+        snap = fetch(client, alerts[0]["snapshot_url"])
         assert snap.status_code == 200 and snap.headers["content-type"] == "image/jpeg"
-        assert alerts[0]["snapshot_url"].startswith(f"/jobs/{job_id}/snapshots/")
+        if store.kind == "r2":
+            # Signed, expiring links straight to the private bucket.
+            assert "X-Amz-Signature=" in alerts[0]["snapshot_url"]
+            assert "X-Amz-Signature=" in status["reference_frame_url"]
+        else:
+            assert alerts[0]["snapshot_url"].startswith(f"/jobs/{job_id}/snapshots/")
+        # What's persisted is the object key, not a local path.
+        assert alerts[0]["snapshot"].startswith(f"jobs/{job_id}/snapshots/frame_")
 
-    def test_uploaded_video_is_deleted_after_processing(self, client, tmp_path):
+    def test_results_go_to_the_store_and_nothing_stays_on_local_disk(self, client, store, tmp_path):
         job_id = upload(client).json()["job_id"]
         wait_for(client, job_id)
-        files = job_files(tmp_path)
-        assert not any(f.endswith("upload") for f in files), files
-        assert f"{job_id}/reference.jpg" in files
+        # The uploaded video and the local snapshots are gone...
+        assert work_files(tmp_path) == []
+        # ...and everything that must survive a restart is in the store.
+        keys = stored_keys(store)
+        assert f"jobs/{job_id}/job.json" in keys
+        assert f"jobs/{job_id}/result.json" in keys
+        assert f"jobs/{job_id}/reference.jpg" in keys
+        assert sum(k.startswith(f"jobs/{job_id}/snapshots/frame_") for k in keys) == 10
+        assert not any(k.endswith("upload") for k in keys)  # the video is never stored
 
-    def test_original_filename_is_kept_for_display_but_never_used_as_a_path(self, client, tmp_path):
+    def test_original_filename_is_kept_for_display_but_never_used_as_a_path(self, client, store):
         body = upload(client, filename="../../etc/passwd.mp4").json()
         wait_for(client, body["job_id"])
         assert body["filename"] == "passwd.mp4"
-        assert all(f.startswith(body["job_id"]) for f in job_files(tmp_path))
+        assert all(k.startswith(f"jobs/{body['job_id']}/") for k in stored_keys(store))
 
 
 class TestJobStates:
@@ -214,20 +275,10 @@ class TestJobStates:
             release.set()
         wait_for(client, first)
 
-    def test_unknown_job_says_it_may_be_from_before_a_restart(self, client):
+    def test_unknown_job_is_404_and_mentions_expiry(self, client):
         r = client.get("/jobs/" + "0" * 32)
         assert r.status_code == 404
-        assert "restart" in r.json()["detail"]
-
-    def test_old_finished_jobs_are_pruned(self, client, tmp_path):
-        main.jobs.keep_finished = 2
-        ids = []
-        for _ in range(3):
-            ids.append(upload(client).json()["job_id"])
-            wait_for(client, ids[-1])
-        assert client.get(f"/jobs/{ids[0]}").status_code == 404
-        assert client.get(f"/jobs/{ids[2]}").status_code == 200
-        assert not any(f.startswith(ids[0]) for f in job_files(tmp_path))
+        assert "expired" in r.json()["detail"]
 
 
 class TestJobRunnerQueueLimit:
@@ -248,16 +299,22 @@ class TestJobRunnerQueueLimit:
                 assert release.wait(timeout=10)
                 return []
 
-        runner = jobs_module.JobRunner(model_lock=threading.Lock(), max_active=1)
+        runner = jobs_module.JobRunner(
+            model_lock=threading.Lock(),
+            store=LocalObjectStore(tmp_path / "store"),
+            work_root=tmp_path / "work",
+            max_active=1,
+        )
         probe, _ = uploads.probe_clip(SAMPLE_CLIP)
+        reference = tmp_path / "ref.jpg"
+        reference.write_bytes(main.CLIPS["sample"].reference_frame_path.read_bytes())
 
         def submit(n):
-            d = tmp_path / str(n)
-            d.mkdir()
-            video = d / "upload"
-            video.write_bytes(SAMPLE_CLIP.read_bytes())
+            d = tmp_path / "work" / str(n)
+            d.mkdir(parents=True)
+            (d / "upload").write_bytes(SAMPLE_CLIP.read_bytes())
             return runner.submit(
-                job_id=f"{n:032x}", directory=d, video_path=video, filename="c.mp4",
+                job_id=f"{n:032x}", work_dir=d, reference_frame=reference, filename="c.mp4",
                 classes="both", probe=probe, zone=main.whole_frame_zone(1280, 720),
                 sample_fps=2.0, detector=Gated(),
             )
@@ -276,26 +333,26 @@ class TestJobRunnerQueueLimit:
 
 
 class TestUploadValidation:
-    def test_text_file_is_415(self, client, tmp_path):
+    def test_text_file_is_415(self, client, store, tmp_path):
         r = upload(client, data=b"just some text, not a video", filename="notes.mp4")
         assert r.status_code == 415
         assert "not a supported video" in r.json()["detail"]
-        assert job_files(tmp_path) == []  # nothing left behind
+        assert work_files(tmp_path) == [] and stored_keys(store) == []  # nothing left behind
 
-    def test_jpeg_is_415_even_though_opencv_would_open_it(self, client, tmp_path):
+    def test_jpeg_is_415_even_though_opencv_would_open_it(self, client, store, tmp_path):
         jpeg = main.CLIPS["sample"].reference_frame_path.read_bytes()
         r = upload(client, data=jpeg, filename="photo.mp4")
         assert r.status_code == 415
-        assert job_files(tmp_path) == []
+        assert work_files(tmp_path) == [] and stored_keys(store) == []
 
-    def test_video_header_with_garbage_content_is_422(self, client, tmp_path):
+    def test_video_header_with_garbage_content_is_422(self, client, store, tmp_path):
         fake_mp4 = b"\x00\x00\x00\x18ftypmp42" + np.random.default_rng(0).bytes(4000)
         r = upload(client, data=fake_mp4)
         assert r.status_code == 422
         assert "could not be opened" in r.json()["detail"] or "could not be decoded" in r.json()["detail"]
-        assert job_files(tmp_path) == []
+        assert work_files(tmp_path) == [] and stored_keys(store) == []
 
-    def test_file_over_the_size_limit_is_413_from_the_real_byte_count(self, client, monkeypatch, tmp_path):
+    def test_file_over_the_size_limit_is_413_from_the_real_byte_count(self, client, store, monkeypatch, tmp_path):
         # The limit sits between the file's real size and that size minus the
         # 1 MB multipart allowance: the declared-length check lets it through,
         # so only the endpoint's own byte count can stop it. (A first version
@@ -307,7 +364,7 @@ class TestUploadValidation:
         r = upload(client)
         assert r.status_code == 413
         assert "size limit" in r.json()["detail"]
-        assert job_files(tmp_path) == []
+        assert work_files(tmp_path) == [] and stored_keys(store) == []
 
     def test_declared_content_length_over_the_limit_is_413_before_reading(self, client, monkeypatch):
         monkeypatch.setattr(main, "UPLOAD_LIMITS", main.UPLOAD_LIMITS.__class__(
@@ -330,13 +387,13 @@ class TestUploadValidation:
         )
         assert r.status_code == 411
 
-    def test_clip_longer_than_the_limit_is_422_with_the_numbers(self, client, monkeypatch, tmp_path):
+    def test_clip_longer_than_the_limit_is_422_with_the_numbers(self, client, store, monkeypatch, tmp_path):
         monkeypatch.setattr(main, "UPLOAD_LIMITS", main.UPLOAD_LIMITS.__class__(
             **{**main.UPLOAD_LIMITS.__dict__, "max_duration_s": 2.0}))
         r = upload(client)
         assert r.status_code == 422
         assert "5.0 s" in r.json()["detail"] and "2 s" in r.json()["detail"]
-        assert job_files(tmp_path) == []
+        assert work_files(tmp_path) == [] and stored_keys(store) == []
 
     def test_resolution_over_the_limit_is_422(self, client, monkeypatch):
         monkeypatch.setattr(main, "UPLOAD_LIMITS", main.UPLOAD_LIMITS.__class__(
@@ -351,7 +408,7 @@ class TestUploadValidation:
     def test_missing_file_is_422(self, client):
         assert client.post("/uploads", data={"classes": "both"}).status_code == 422
 
-    def test_truncated_clip_is_accepted_then_the_job_fails_clearly(self, client, tmp_path):
+    def test_truncated_clip_is_accepted_then_the_job_fails_clearly(self, client, store, tmp_path):
         # Damage past the first frame can't be seen at upload time without
         # decoding the whole file; the job catches it (Day 4's check).
         data = SAMPLE_CLIP.read_bytes()
@@ -361,8 +418,11 @@ class TestUploadValidation:
         assert status["status"] == "failed"
         assert "truncated or corrupt" in status["error"]
         assert client.get(f"/jobs/{status['job_id']}/alerts").status_code == 409
-        # The failed job's partial snapshots and the upload are gone.
-        assert not any("snapshots/" in f or f.endswith("upload") for f in job_files(tmp_path))
+        # The failed job's partial snapshots and the upload are gone; its
+        # record says why, so the failure survives a restart too.
+        assert work_files(tmp_path) == []
+        assert not any("snapshots/" in k for k in stored_keys(store))
+        assert store.get_json(f"jobs/{status['job_id']}/job.json")["status"] == "failed"
 
     def test_upload_without_a_loaded_model_is_503(self, client, monkeypatch):
         main.app.dependency_overrides.clear()
@@ -411,9 +471,10 @@ class TestSamplePathAlongsideUploads:
         wait_for(client, job_id)
 
 
-def test_startup_clears_job_files_left_from_before_a_restart(tmp_path, monkeypatch):
-    # Jobs are in memory, so after a restart their files belong to jobs no
-    # one can look up; left alone, they'd pile up on the host's disk.
+def test_startup_clears_the_work_folder_left_from_before_a_restart(tmp_path, monkeypatch):
+    # Uploaded videos live in the work folder only while their job runs. After
+    # a restart nothing is running, so anything there is left over; left
+    # alone, it would pile up on the host's disk.
     class StubDetector:  # starts without real weights
         is_loaded = False
         weights_path = main.Path("yolo26n.pt")
@@ -421,9 +482,9 @@ def test_startup_clears_job_files_left_from_before_a_restart(tmp_path, monkeypat
         def load(self):
             self.is_loaded = True
 
-    stale = tmp_path / "output" / "jobs" / ("a" * 32)
+    stale = tmp_path / "output" / "work" / ("a" * 32)
     stale.mkdir(parents=True)
-    (stale / "reference.jpg").write_bytes(b"old")
+    (stale / "upload").write_bytes(b"an upload whose job died with the old process")
     monkeypatch.setattr(main, "OUTPUT_DIR", tmp_path / "output")
     monkeypatch.setattr(main, "detector", StubDetector())
     with TestClient(main.app):
@@ -442,3 +503,85 @@ def test_limits_endpoint_reports_the_limits_actually_enforced(client, monkeypatc
     assert body["max_resolution"] == "1920x1080"
     assert body["classes"] == ["person", "vehicle", "both"]
     assert body["sample_fps"] == main.UPLOAD_SAMPLE_FPS
+
+
+# --- persistence: what R2 is for (docs/PHASE1.md) -------------------------------------------
+
+
+class TestSurvivesRestart:
+    def test_finished_job_and_its_results_survive_a_restart(self, client, store, tmp_path, monkeypatch):
+        job_id = upload(client).json()["job_id"]
+        wait_for(client, job_id)
+        before = client.get(f"/jobs/{job_id}/alerts").json()
+
+        # A restart: a fresh process has an empty memory and an empty work
+        # folder; only the store carries over.
+        monkeypatch.setattr(main, "jobs", make_runner(store, tmp_path))
+        status = client.get(f"/jobs/{job_id}").json()
+        assert status["status"] == "complete"
+        after = client.get(f"/jobs/{job_id}/alerts").json()
+        assert [a["snapshot"] for a in after["alerts"]] == [a["snapshot"] for a in before["alerts"]]
+        assert fetch(client, after["alerts"][0]["snapshot_url"]).status_code == 200
+        assert fetch(client, status["reference_frame_url"]).status_code == 200
+
+    def test_job_cut_off_by_a_restart_is_reported_as_interrupted(self, client, store, tmp_path, monkeypatch):
+        # What a restart mid-job leaves behind: a record still saying
+        # "processing", and no process that is running it.
+        job_id = upload(client).json()["job_id"]
+        wait_for(client, job_id)
+        record = store.get_json(f"jobs/{job_id}/job.json")
+        record["status"] = "processing"
+        store.put_json(f"jobs/{job_id}/job.json", record)
+
+        monkeypatch.setattr(main, "jobs", make_runner(store, tmp_path))
+        status = client.get(f"/jobs/{job_id}").json()
+        assert status["status"] == "failed"
+        assert "interrupted by a server restart" in status["error"]
+        # ...and that verdict is saved, not recomputed forever.
+        assert store.get_json(f"jobs/{job_id}/job.json")["status"] == "failed"
+
+    def test_complete_is_only_reported_once_the_stored_record_says_so(self, client, store):
+        # Ordering bug found on the way: the status used to flip to
+        # "complete" in memory before job.json was saved.
+        job_id = upload(client).json()["job_id"]
+        wait_for(client, job_id)
+        assert store.get_json(f"jobs/{job_id}/job.json")["status"] == "complete"
+
+
+class TestStorageFailures:
+    def test_failure_saving_results_fails_the_job_clearly_without_partial_snapshots(
+        self, client, store, tmp_path
+    ):
+        original = store.put_file
+        calls = {"n": 0}
+
+        def flaky_put_file(key, path, content_type):
+            if "/snapshots/" in key:
+                calls["n"] += 1
+                if calls["n"] == 3:  # fail partway through the snapshots
+                    raise ConnectionError("simulated R2 outage")
+            return original(key, path, content_type)
+
+        store.put_file = flaky_put_file
+        job_id = upload(client).json()["job_id"]
+        status = wait_for(client, job_id)
+        assert status["status"] == "failed"
+        assert "could not be saved to storage" in status["error"]
+        assert not any("/snapshots/" in k for k in stored_keys(store))
+        assert work_files(tmp_path) == []
+
+    def test_upload_is_503_when_storage_is_unavailable(self, client, monkeypatch):
+        monkeypatch.setattr(main, "storage_error", "StorageError: bucket unreachable")
+        r = upload(client)
+        assert r.status_code == 503
+        assert "storage" in r.json()["detail"]
+
+    def test_upload_is_503_if_the_store_refuses_the_new_job(self, client, store, tmp_path):
+        def refuse(*args, **kwargs):
+            raise ConnectionError("simulated R2 outage")
+
+        store.put_file = refuse
+        r = upload(client)
+        assert r.status_code == 503
+        assert work_files(tmp_path) == []
+        assert main.jobs.active_count() == 0  # not left counting against the queue

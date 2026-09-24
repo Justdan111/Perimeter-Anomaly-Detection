@@ -38,7 +38,7 @@ import cv2
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi import Path as Path_  # pathlib.Path is used too
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.models.schemas import Alert, ClipResult, Zone
@@ -51,7 +51,16 @@ from app.services.clip_processor import (
     whole_frame_zone,
 )
 from app.services.detector import Detector
-from app.services.jobs import Job, JobRunner, JobState, QueueFull, new_job_id
+from app.services.jobs import (
+    Job,
+    JobRunner,
+    JobState,
+    QueueFull,
+    new_job_id,
+    reference_key,
+    snapshot_key,
+)
+from app.services.storage import LocalObjectStore, ObjectStore, StorageError, store_from_env
 from app.services.uploads import (
     DEFAULT_LIMITS,
     UploadRejected,
@@ -116,7 +125,16 @@ UPLOAD_LIMITS = DEFAULT_LIMITS
 UPLOAD_SAMPLE_FPS = float(os.environ.get("PERIMETER_UPLOAD_SAMPLE_FPS", 2.0))
 # Allowance for the multipart framing around the file in the request body.
 _MULTIPART_OVERHEAD = 1024 * 1024
-jobs = JobRunner(model_lock=_processing_lock)
+
+# Upload results go to Cloudflare R2 when PERIMETER_R2_* is configured (see
+# app/services/storage.py), else to a local folder for development. Chosen at
+# startup; until then (and in tests) a local store is in place.
+storage_error: str | None = None
+jobs = JobRunner(
+    model_lock=_processing_lock,
+    store=LocalObjectStore(OUTPUT_DIR / "store"),
+    work_root=OUTPUT_DIR / "work",
+)
 
 
 @asynccontextmanager
@@ -132,10 +150,23 @@ async def lifespan(app: FastAPI):
     logged. That is louder than refusing to boot — a host polling /health
     (Day 5) sees why, instead of a crash loop with the reason only in logs.
     """
-    global model_load_error
-    # Jobs live in memory, so files from before a restart belong to jobs
-    # nobody can look up any more.
-    shutil.rmtree(_jobs_dir(), ignore_errors=True)
+    global model_load_error, storage_error, jobs
+    # The work folder holds uploaded videos only while their job runs; after
+    # a restart nothing can be running, so anything there is left over.
+    shutil.rmtree(_work_dir(), ignore_errors=True)
+    store: ObjectStore
+    try:
+        store = store_from_env(OUTPUT_DIR / "store")
+        store.check()
+        storage_error = None
+        logger.info("upload results are stored in: %s", store.kind)
+    except Exception as e:
+        # Uploads are refused (503) rather than falling back to local disk,
+        # where results would vanish at the next restart.
+        storage_error = f"{type(e).__name__}: {e}"
+        store = LocalObjectStore(OUTPUT_DIR / "store")
+        logger.error("result storage unavailable; uploads disabled: %s", storage_error)
+    jobs = JobRunner(model_lock=_processing_lock, store=store, work_root=_work_dir())
     try:
         detector.load()
         model_load_error = None
@@ -190,8 +221,8 @@ def _snapshot_dir(clip_id: str) -> Path:
     return OUTPUT_DIR / clip_id / "snapshots"
 
 
-def _jobs_dir() -> Path:
-    return OUTPUT_DIR / "jobs"
+def _work_dir() -> Path:
+    return OUTPUT_DIR / "work"
 
 
 @app.middleware("http")
@@ -236,6 +267,10 @@ class HealthResponse(BaseModel):
             "CPU threads PyTorch uses for inference; set from the container's CPU "
             "limit when there is one. Null when the model isn't loaded."
         )
+    )
+    storage: str = Field(description='Where upload results are kept: "r2" or "local".')
+    storage_error: str | None = Field(
+        description="Why result storage is unavailable (uploads disabled); null when fine."
     )
 
 
@@ -313,13 +348,15 @@ def health() -> HealthResponse:
     poll it.
     """
     return HealthResponse(
-        status="ok" if detector.is_loaded else "degraded",
+        status="ok" if detector.is_loaded and storage_error is None else "degraded",
         model_loaded=detector.is_loaded,
         model_weights=detector.weights_path.name,
         model_error=model_load_error,
         inference_threads=(
             getattr(detector, "inference_threads", None) if detector.is_loaded else None
         ),
+        storage=jobs.store.kind,
+        storage_error=storage_error,
     )
 
 
@@ -449,11 +486,12 @@ def _job_response(job: Job) -> JobResponse:
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
-        processing_time_s=job.result.processing_time_s if job.result else None,
+        processing_time_s=job.processing_time_s,
         error=job.error,
         status_url=base,
         alerts_url=f"{base}/alerts",
-        reference_frame_url=f"{base}/reference-frame",
+        # A signed, expiring R2 link in production; an API route locally.
+        reference_frame_url=jobs.store.url(reference_key(job.job_id)),
     )
 
 
@@ -516,11 +554,14 @@ def create_upload(
     endpoint: copying the file and probing it with OpenCV block, so FastAPI
     runs this in a worker thread instead of on the event loop.
     """
+    if storage_error is not None:
+        raise HTTPException(503, f"result storage is unavailable, so uploads are disabled ({storage_error})")
     if jobs.active_count() >= jobs.max_active:
         raise HTTPException(429, _busy_message())
 
     job_id = new_job_id()
-    directory = _jobs_dir() / job_id
+    # Local and temporary: the video lives here only until its job ends.
+    directory = jobs.work_root / job_id
     directory.mkdir(parents=True)
     video_path = directory / "upload"
     try:
@@ -534,19 +575,29 @@ def create_upload(
         probe, first_frame = probe_clip(video_path)
         check_probe(probe, UPLOAD_LIMITS)
         _write_reference_frame(first_frame, directory / "reference.jpg")
-        job = jobs.submit(
-            job_id=job_id,
-            directory=directory,
-            video_path=video_path,
-            # Display only: never used to build a path.
-            filename=PurePosixPath((file.filename or "upload").replace("\\", "/")).name[:120]
-            or "upload",
-            classes=classes,
-            probe=probe,
-            zone=whole_frame_zone(probe.width, probe.height),
-            sample_fps=UPLOAD_SAMPLE_FPS,
-            detector=detector,
-        )
+        try:
+            job = jobs.submit(
+                job_id=job_id,
+                work_dir=directory,
+                reference_frame=directory / "reference.jpg",
+                # Display only: never used to build a path.
+                filename=PurePosixPath((file.filename or "upload").replace("\\", "/")).name[:120]
+                or "upload",
+                classes=classes,
+                probe=probe,
+                zone=whole_frame_zone(probe.width, probe.height),
+                sample_fps=UPLOAD_SAMPLE_FPS,
+                detector=detector,
+            )
+        except (QueueFull, UploadRejected):
+            raise
+        except Exception as e:  # the store refused the reference frame / record
+            logger.exception("could not register job %s in storage", job_id)
+            raise UploadRejected(
+                f"the upload couldn't be saved to result storage ({type(e).__name__}); "
+                "try again shortly",
+                status_code=503,
+            ) from e
     except UploadRejected as e:
         shutil.rmtree(directory, ignore_errors=True)
         raise HTTPException(e.status_code, str(e)) from e
@@ -574,8 +625,8 @@ def _get_job(job_id: str) -> Job:
     if job is None:
         raise HTTPException(
             404,
-            f"unknown job {job_id!r}: it may have expired, or the server may have "
-            "restarted since it was created (jobs are kept in memory)",
+            f"unknown job {job_id!r}: it doesn't exist, or its results have expired "
+            "(they are kept for 7 days)",
         )
     return job
 
@@ -588,12 +639,14 @@ def job_status(job_id: Annotated[str, _JOB_ID]) -> JobResponse:
 @app.get("/jobs/{job_id}/alerts", response_model=AlertsResponse)
 def job_alerts(job_id: Annotated[str, _JOB_ID]) -> AlertsResponse:
     job = _get_job(job_id)
-    if job.status is not JobState.COMPLETE or job.result is None:
+    if job.status is not JobState.COMPLETE:
         detail = f"job is {job.status.value}; results are available once it is complete"
         if job.error:
             detail += f" (error: {job.error})"
         raise HTTPException(409, detail)
-    result = job.result
+    result = jobs.result(job)
+    if result is None:
+        raise HTTPException(500, f"job {job_id!r} is complete but its results are missing from storage")
     return AlertsResponse(
         clip_id=job.job_id,
         zone_name=job.zone.name,
@@ -605,30 +658,41 @@ def job_alerts(job_id: Annotated[str, _JOB_ID]) -> AlertsResponse:
         frames_processed=result.frames_processed,
         processing_time_s=result.processing_time_s,
         alerts=[
-            AlertOut(**a.model_dump(), snapshot_url=f"/jobs/{job.job_id}/snapshots/{a.snapshot}")
+            # `snapshot` is the object's key in the store; the URL is a
+            # signed, expiring R2 link (or an API route locally), issued
+            # fresh on every request.
+            AlertOut(**a.model_dump(), snapshot_url=jobs.store.url(a.snapshot))
             for a in result.alerts
         ],
     )
 
 
-@app.get("/jobs/{job_id}/reference-frame", response_class=FileResponse)
-def job_reference_frame(job_id: Annotated[str, _JOB_ID]) -> FileResponse:
-    job = _get_job(job_id)
-    if not job.reference_frame_path.is_file():
-        raise HTTPException(404, "reference frame not available")
-    return FileResponse(job.reference_frame_path, media_type="image/jpeg")
+def _serve_stored(key: str):
+    """Serve an object from the local store; with R2, redirect to a signed link."""
+    store = jobs.store
+    if store.kind != "local":
+        return RedirectResponse(store.url(key), status_code=307)
+    path = store.local_path(key)
+    if not path.is_file():
+        raise HTTPException(404, f"not found: {key}")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/jobs/{job_id}/reference.jpg", response_class=FileResponse)
+def job_reference_frame(job_id: Annotated[str, _JOB_ID]):
+    _get_job(job_id)
+    return _serve_stored(reference_key(job_id))
 
 
 @app.get("/jobs/{job_id}/snapshots/{name}", response_class=FileResponse)
 def job_snapshot(
     job_id: Annotated[str, _JOB_ID],
     name: Annotated[str, Path_(pattern=r"^frame_\d{5}\.jpg$")],
-) -> FileResponse:
+):
     job = _get_job(job_id)
-    path = job.snapshot_dir / name
-    if job.status is not JobState.COMPLETE or not path.is_file():
+    if job.status is not JobState.COMPLETE:
         raise HTTPException(404, f"no snapshot {name!r} for job {job_id!r}")
-    return FileResponse(path, media_type="image/jpeg")
+    return _serve_stored(snapshot_key(job_id, name))
 
 
 @app.get("/clips/{clip_id}/snapshots/{name}", response_class=FileResponse)

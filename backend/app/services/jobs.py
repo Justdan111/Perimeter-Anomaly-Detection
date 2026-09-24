@@ -6,23 +6,28 @@ Design — why it looks like this:
   there is one model instance, which isn't safe to share across threads.
   Two jobs at once would each run at half speed and risk the model; one at a
   time finishes the first job sooner and keeps the model single-threaded.
-- **State in memory** (a dict keyed by job id). The service runs as one
-  process on one instance with no persistent disk. A database or Redis only
-  pays for itself with several workers or instances. The cost, stated: a
-  restart or redeploy forgets every job, and its files are cleared at
-  startup. The API says so ("unknown job — the server may have restarted")
-  rather than returning a bare 404.
+- **The result store (Cloudflare R2) is the record of a job; memory is a
+  cache.** Render's free tier wipes the local filesystem on every restart,
+  redeploy and idle spin-down (docs/PHASE1.md), so everything that must
+  outlive the process goes to R2 under `jobs/<id>/`: `job.json` (status,
+  rewritten at each state change), `result.json` (alerts), `reference.jpg`
+  and `snapshots/`. Memory holds only live progress for the job running now.
+- **The uploaded video is local and temporary.** It exists in a work folder
+  only while its job runs, then is deleted — only results persist.
+- **A restart can't resume a job** (its local video is gone). A job whose
+  stored status is still queued/processing but which this process doesn't
+  know about was interrupted by a restart: it is reported, and saved, as
+  failed with that reason.
 - **Shares the model lock with the sample-clip endpoint**, so the model runs
   one clip at a time whichever path started it. A job waiting for that lock
   reports `queued`.
 - **Bounded**: at most `max_active` unfinished jobs (the upload endpoint
-  answers 429 past that), and only the newest `keep_finished` finished jobs
-  keep their files. Each uploaded video is deleted as soon as its job ends;
-  only the snapshots and the reference frame are kept.
+  answers 429 past that). Old results are removed by a lifecycle rule on the
+  bucket (README), not by this code.
 
-`clip_processor.process_clip` is unchanged in what it does — the job just
-calls it, with the uploaded clip, a whole-frame zone, the chosen classes and
-a progress callback.
+`clip_processor.process_clip` is unchanged in what it does — the job calls
+it with the uploaded clip, a whole-frame zone, the chosen classes and a
+progress callback, then uploads what it produced.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from app.services.clip_processor import (
     count_sampled_frames,
     process_clip,
 )
+from app.services.storage import ObjectStore
 from app.services.uploads import ClipProbe
 
 logger = logging.getLogger(__name__)
@@ -60,16 +66,35 @@ class JobState(str, Enum):
 
 FINISHED = (JobState.COMPLETE, JobState.FAILED)
 
+INTERRUPTED_MESSAGE = (
+    "processing was interrupted by a server restart (the free-tier host restarts on "
+    "redeploys and after idling); please upload the clip again"
+)
+
 
 class QueueFull(Exception):
     """Too many unfinished jobs; the caller should try again later."""
 
 
+class SaveError(RuntimeError):
+    """Results were produced but couldn't be saved to the store."""
+
+
+def job_prefix(job_id: str) -> str:
+    return f"jobs/{job_id}/"
+
+
+def reference_key(job_id: str) -> str:
+    return f"jobs/{job_id}/reference.jpg"
+
+
+def snapshot_key(job_id: str, filename: str) -> str:
+    return f"jobs/{job_id}/snapshots/{filename}"
+
+
 @dataclass
 class Job:
     job_id: str
-    directory: Path
-    video_path: Path
     filename: str
     classes: str
     probe: ClipProbe
@@ -82,15 +107,56 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
-    result: ClipResult | None = None
+    processing_time_s: float | None = None
+    # Local, temporary: only set while this process is running the job.
+    work_dir: Path | None = None
 
     @property
-    def snapshot_dir(self) -> Path:
-        return self.directory / "snapshots"
+    def video_path(self) -> Path:
+        assert self.work_dir is not None
+        return self.work_dir / "upload"
 
-    @property
-    def reference_frame_path(self) -> Path:
-        return self.directory / "reference.jpg"
+    def to_record(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "filename": self.filename,
+            "classes": self.classes,
+            "probe": {
+                "width": self.probe.width,
+                "height": self.probe.height,
+                "fps": self.probe.fps,
+                "frame_count": self.probe.frame_count,
+            },
+            "zone": self.zone.model_dump(mode="json"),
+            "sample_fps": self.sample_fps,
+            "frames_to_process": self.frames_to_process,
+            "frames_processed": self.frames_processed,
+            "created_at": self.created_at,
+            "status": self.status.value,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "processing_time_s": self.processing_time_s,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict) -> Job:
+        return cls(
+            job_id=record["job_id"],
+            filename=record["filename"],
+            classes=record["classes"],
+            probe=ClipProbe(**record["probe"]),
+            zone=Zone.model_validate(record["zone"]),
+            sample_fps=record["sample_fps"],
+            frames_to_process=record["frames_to_process"],
+            frames_processed=record["frames_processed"],
+            created_at=record["created_at"],
+            status=JobState(record["status"]),
+            started_at=record["started_at"],
+            finished_at=record["finished_at"],
+            error=record["error"],
+            processing_time_s=record["processing_time_s"],
+        )
 
 
 def new_job_id() -> str:
@@ -105,6 +171,8 @@ def describe_failure(error: BaseException) -> str:
         return f"the video could not be read: {error}"
     if isinstance(error, FrameSizeMismatchError):
         return "the video changes resolution partway through, which isn't supported"
+    if isinstance(error, SaveError):
+        return f"the results could not be saved to storage: {error}"
     return f"processing failed unexpectedly ({type(error).__name__}); see the server log"
 
 
@@ -112,21 +180,59 @@ class JobRunner:
     def __init__(
         self,
         model_lock: threading.Lock,
+        store: ObjectStore,
+        work_root: Path,
         max_active: int = 3,
-        keep_finished: int = 10,
     ) -> None:
         self.max_active = max_active
-        self.keep_finished = keep_finished
+        self.store = store
+        self.work_root = Path(work_root)
         self._model_lock = model_lock
         self._state_lock = threading.Lock()
-        self._jobs: dict[str, Job] = {}  # insertion order = submission order
+        # Jobs this process knows about: unfinished ones (the source of live
+        # progress) plus finished ones it ran or has looked up (a cache).
+        self._jobs: dict[str, Job] = {}
+        self._results: dict[str, ClipResult] = {}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-job")
 
     # --- queries ----------------------------------------------------------------------
 
     def get(self, job_id: str) -> Job | None:
+        """The job, from memory or (after a restart) from the store."""
         with self._state_lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        if job is not None:
+            return job
+        record = self.store.get_json(f"{job_prefix(job_id)}job.json")
+        if record is None:
+            return None
+        job = Job.from_record(record)
+        if job.status not in FINISHED:
+            # The store says it was still running, but this process has never
+            # seen it: whichever process was running it is gone.
+            job.status = JobState.FAILED
+            job.error = INTERRUPTED_MESSAGE
+            job.finished_at = job.finished_at or time.time()
+            self._save_record(job)
+        with self._state_lock:
+            self._jobs.setdefault(job_id, job)
+        return job
+
+    def result(self, job: Job) -> ClipResult | None:
+        """The finished job's alerts (snapshot fields are store keys)."""
+        if job.status is not JobState.COMPLETE:
+            return None
+        with self._state_lock:
+            cached = self._results.get(job.job_id)
+        if cached is not None:
+            return cached
+        record = self.store.get_json(f"{job_prefix(job.job_id)}result.json")
+        if record is None:
+            return None
+        result = ClipResult.model_validate(record)
+        with self._state_lock:
+            self._results[job.job_id] = result
+        return result
 
     def active_count(self) -> int:
         with self._state_lock:
@@ -146,8 +252,8 @@ class JobRunner:
         self,
         *,
         job_id: str,
-        directory: Path,
-        video_path: Path,
+        work_dir: Path,
+        reference_frame: Path,
         filename: str,
         classes: str,
         probe: ClipProbe,
@@ -155,70 +261,124 @@ class JobRunner:
         sample_fps: float | None,
         detector: FrameDetector,
     ) -> Job:
+        """Register a validated upload (its video already at work_dir/upload)."""
         job = Job(
             job_id=job_id,
-            directory=directory,
-            video_path=video_path,
             filename=filename,
             classes=classes,
             probe=probe,
             zone=zone,
             sample_fps=sample_fps,
             frames_to_process=count_sampled_frames(probe.frame_count, probe.fps, sample_fps),
+            work_dir=work_dir,
         )
         with self._state_lock:
             active = sum(j.status not in FINISHED for j in self._jobs.values())
             if active >= self.max_active:
                 raise QueueFull
             self._jobs[job_id] = job
+        try:
+            self.store.put_file(reference_key(job_id), reference_frame, "image/jpeg")
+            self._save_record(job)
+        except Exception:
+            with self._state_lock:
+                self._jobs.pop(job_id, None)
+            raise
         self._executor.submit(self._run, job, detector)
         return job
 
     # --- the worker --------------------------------------------------------------------
 
     def _run(self, job: Job, detector: FrameDetector) -> None:
+        # The final state is decided first and *published last*: pollers see
+        # `complete` only once the results, the final record and the local
+        # cleanup are all done. (Publishing first let a client see
+        # "complete" before job.json said so — caught by a flaky test.)
+        final_status = JobState.FAILED
+        error: str | None = None
         try:
             # Blocks while the sample-clip endpoint (or anything else) has
             # the model; the job stays "queued" until then.
             with self._model_lock:
                 job.status = JobState.PROCESSING
                 job.started_at = time.time()
+                self._save_record(job)
 
                 def progress(frames_done: int) -> None:
                     job.frames_processed = frames_done
 
                 try:
-                    job.result = process_clip(
+                    result = process_clip(
                         job.video_path,
                         job.zone,
                         detector,
-                        job.snapshot_dir,
+                        job.work_dir / "snapshots",
                         sample_fps=job.sample_fps,
                         allowed_classes=CLASS_GROUPS[job.classes],
                         on_progress=progress,
                     )
-                    job.status = JobState.COMPLETE
+                    stored = self._save_results(job, result)
+                    with self._state_lock:
+                        self._results[job.job_id] = stored
+                    job.processing_time_s = result.processing_time_s
+                    final_status = JobState.COMPLETE
                 except Exception as e:
                     logger.exception("job %s failed", job.job_id)
-                    job.error = describe_failure(e)
-                    job.status = JobState.FAILED
+                    error = describe_failure(e)
         except Exception:  # never let the worker thread die silently
             logger.exception("job %s crashed outside processing", job.job_id)
-            job.error = job.error or "processing failed unexpectedly; see the server log"
-            job.status = JobState.FAILED
+            error = error or "processing failed unexpectedly; see the server log"
         finally:
             job.finished_at = time.time()
-            job.video_path.unlink(missing_ok=True)
-            self._prune()
+            job.error = error
+            try:
+                record = job.to_record()
+                record["status"] = final_status.value
+                self.store.put_json(f"{job_prefix(job.job_id)}job.json", record)
+            except Exception:
+                logger.exception("could not save final status of job %s", job.job_id)
+            if job.work_dir is not None:
+                shutil.rmtree(job.work_dir, ignore_errors=True)  # video + local snapshots
+            job.status = final_status  # published last
+            with self._state_lock:
+                self._prune_memory()
 
-    def _prune(self) -> None:
-        with self._state_lock:
-            finished = [j for j in self._jobs.values() if j.status in FINISHED]
-            stale = finished[: max(0, len(finished) - self.keep_finished)]
-            for job in stale:
-                del self._jobs[job.job_id]
-        for job in stale:
-            shutil.rmtree(job.directory, ignore_errors=True)
+    def _save_results(self, job: Job, result: ClipResult) -> ClipResult:
+        """Upload snapshots, then the alerts with store keys in place of filenames."""
+        try:
+            for filename in sorted({a.snapshot for a in result.alerts}):
+                self.store.put_file(
+                    snapshot_key(job.job_id, filename),
+                    job.work_dir / "snapshots" / filename,
+                    "image/jpeg",
+                )
+            stored = result.model_copy(
+                update={
+                    "alerts": [
+                        a.model_copy(update={"snapshot": snapshot_key(job.job_id, a.snapshot)})
+                        for a in result.alerts
+                    ]
+                }
+            )
+            self.store.put_json(f"{job_prefix(job.job_id)}result.json", stored.model_dump(mode="json"))
+            return stored
+        except Exception as e:
+            # Don't leave half a set of snapshots behind for a failed job.
+            try:
+                self.store.delete_prefix(f"{job_prefix(job.job_id)}snapshots/")
+            except Exception:
+                logger.exception("could not clean up snapshots of job %s", job.job_id)
+            raise SaveError(str(e)) from e
+
+    def _save_record(self, job: Job) -> None:
+        self.store.put_json(f"{job_prefix(job.job_id)}job.json", job.to_record())
+
+    def _prune_memory(self, keep: int = 50) -> None:
+        """Forget old finished jobs from memory; they stay in the store."""
+        finished = [j.job_id for j in self._jobs.values() if j.status in FINISHED]
+        for job_id in finished[: max(0, len(finished) - keep)]:
+            self._jobs.pop(job_id, None)
+            self._results.pop(job_id, None)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

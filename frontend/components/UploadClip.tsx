@@ -74,8 +74,8 @@ export function UploadClip({ initialJobId }: { initialJobId: string | null }) {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 404) {
           setError(
-            "This job is no longer on the server — it may have expired, or the server restarted " +
-              "(jobs are kept in memory). Upload the clip again.",
+            "This job wasn't found — its results may have expired (they're kept for 7 days). " +
+              "Upload the clip again.",
           );
           setJobId(null);
           setJobInUrl(null);
