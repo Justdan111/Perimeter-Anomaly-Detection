@@ -134,9 +134,15 @@ held-out set (the held-out numbers are the honest ones):
 | Vehicles, held-out (32) | 22 | 8 | 2 | **92%** |
 | Clothing, held-out people ≥150 px (42 regions) | 28 | 11 | 3 | **90%** |
 
-Checked by eye through the dashboard: of the first 40 "blue car" results on
-the same clip, about 33 were blue, navy or teal cars and about 5 were white
-or silver cars in shade.
+Checked by eye through the dashboard, on the same clip:
+- **"blue cars"**: of the first 40 results, about 33 were blue, navy or teal
+  cars and about 5 were white or silver cars in shade;
+- **"people with a blue top"** (live site): of the first 30 results, about 21
+  right, 6 wrong, 3 ambiguous — roughly **75–80%**, lower than the overall
+  clothing figure. Blue is the hardest colour: shade tints white towards it,
+  and lavender/purple shirts sit right next to it in hue;
+- **"red vehicles"** returns nothing on this clip — correct, it has no red
+  cars. Red cars were read correctly (2 of 2) in the night street clip.
 
 **Where it holds up:** daylight; strongly coloured cars and clothes (red,
 blue, orange, green); black cars and black clothing; white cars and shirts
@@ -165,9 +171,18 @@ with some sun on them; black bags.
 
 **Cost:** colour extraction measured at **0.36 ms per alert** on a laptop and
 **0.63 ms** in the container limited to 1 CPU — about 0.8 s for the 1,286
-alerts of the 56 s clip, against ~21 s of processing there (~4%, within
-run-to-run noise). Re-measuring on the deployed free tier is the next step
-(see the PR for Phase 2).
+alerts of the 56 s clip. **On the deployed free tier it made no measurable
+difference** (same clips, same classes, 2026-09-25):
+
+| Clip | Processing, Phase 1 runs | Processing, with colours |
+|---|---|---|
+| 20 s, 720p | 37.3, 38.0, 38.8 s | 37.4 s |
+| 56 s, 1080p | 147.2, 155.0, 155.4 s | 155.4 s |
+
+Both fall inside Phase 1's run-to-run range, so the 60 s upload cap and the
+timing table under [Uploads](#uploads--limits-and-measured-timing) still
+stand. Jobs processed before colours existed still open (verified live):
+their alerts show no colours and the view says colours weren't recorded.
 
 ## License — AGPL-3.0, and what it means
 
@@ -287,7 +302,11 @@ requests return `503` with the same message.
   Vercel origin. The image runs as a non-root user and has the YOLO26-N
   weights baked in at build time, so a cold start never downloads them.
 - **Frontend — Vercel**, Root Directory `frontend`, env `NEXT_PUBLIC_API_URL`
-  set to the Render URL before the build.
+  set to the Render URL before the build. **Deploy the frontend together with
+  the backend when the API changes shape**: Phase 2 changed a job's `classes`
+  from one value to a list, and for a while the live site ran the Phase 1
+  frontend against the Phase 2 API — every job page failed to render until
+  Vercel redeployed from `main`.
 - **Upload results — Cloudflare R2**: a private bucket with a lifecycle rule
   deleting objects after 7 days, and an API token with Object Read & Write on
   that bucket only. On Render, set `PERIMETER_R2_ENDPOINT`
