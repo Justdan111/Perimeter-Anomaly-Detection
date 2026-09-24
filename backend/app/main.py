@@ -164,6 +164,12 @@ class HealthResponse(BaseModel):
     model_error: str | None = Field(
         description="Why the model failed to load at startup; null when loaded."
     )
+    inference_threads: int | None = Field(
+        description=(
+            "CPU threads PyTorch uses for inference; set from the container's CPU "
+            "limit when there is one. Null when the model isn't loaded."
+        )
+    )
 
 
 class ClipInfo(BaseModel):
@@ -215,6 +221,9 @@ def health() -> HealthResponse:
         model_loaded=detector.is_loaded,
         model_weights=detector.weights_path.name,
         model_error=model_load_error,
+        inference_threads=(
+            getattr(detector, "inference_threads", None) if detector.is_loaded else None
+        ),
     )
 
 

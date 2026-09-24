@@ -31,6 +31,7 @@ _MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
 os.environ.setdefault("YOLO_CONFIG_DIR", str(_MODELS_DIR))
 os.environ.setdefault("YOLO_VERBOSE", "false")
 
+import torch  # noqa: E402
 from ultralytics import YOLO  # noqa: E402  (must follow the env vars above)
 
 DEFAULT_WEIGHTS = _MODELS_DIR / "yolo26n.pt"
@@ -39,6 +40,88 @@ DEFAULT_WEIGHTS = _MODELS_DIR / "yolo26n.pt"
 # starting point, not a tuned value — Day 4 revisits it against the sample
 # clip. Recorded here so the number is a decision, not an accident.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.35
+
+_CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_V1_QUOTA = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+_CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+
+
+# --- CPU threads for inference ------------------------------------------------
+#
+# ultralytics sets PyTorch's thread count to os.cpu_count() - 1 during the
+# first prediction. In a container, os.cpu_count() is the HOST's core count,
+# not the container's CPU allowance, so a container limited to 1 CPU ran 7
+# inference threads fighting over it — ~13x slower per frame than 1 thread
+# (measured Day 5; see tests/test_inference_threads.py for the numbers).
+# The fix: read the container's actual CPU limit and use that many threads.
+# With no limit (native runs), ultralytics' own default is left alone.
+
+
+def cpu_limit_from_cgroup(
+    cpu_max_v2: str | None = None,
+    cfs_quota_v1: str | None = None,
+    cfs_period_v1: str | None = None,
+) -> float | None:
+    """The container's CPU allowance in CPUs (e.g. 0.5), or None if unlimited.
+
+    Takes the cgroup files' contents rather than reading them, so it can be
+    tested with plain strings. Anything unparseable counts as "no limit":
+    this only tunes performance, so it must never stop the service starting.
+    """
+    try:
+        if cpu_max_v2 is not None:
+            quota, period = cpu_max_v2.split()
+            if quota == "max":
+                return None
+            limit = int(quota) / int(period)
+        elif cfs_quota_v1 is not None and cfs_period_v1 is not None:
+            quota_us = int(cfs_quota_v1)
+            if quota_us < 0:
+                return None
+            limit = quota_us / int(cfs_period_v1)
+        else:
+            return None
+    except (ValueError, ZeroDivisionError):
+        return None
+    return limit if limit > 0 else None
+
+
+def read_cgroup_cpu_limit() -> float | None:
+    """`cpu_limit_from_cgroup` applied to this machine's cgroup files."""
+
+    def read(path: Path) -> str | None:
+        try:
+            return path.read_text()
+        except OSError:
+            return None
+
+    return cpu_limit_from_cgroup(
+        cpu_max_v2=read(_CGROUP_V2_CPU_MAX),
+        cfs_quota_v1=read(_CGROUP_V1_QUOTA),
+        cfs_period_v1=read(_CGROUP_V1_PERIOD),
+    )
+
+
+def choose_inference_threads(cpu_limit: float | None, override: str | None) -> int | None:
+    """Thread count to set, or None to keep the library default.
+
+    `override` is the PERIMETER_TORCH_THREADS environment variable. Otherwise
+    a CPU limit is rounded DOWN to whole CPUs (minimum 1): a thread beyond
+    the allowance gets throttled, and throttling is what made 7 threads slow.
+    """
+    if override is not None:
+        try:
+            threads = int(override)
+        except ValueError:
+            threads = 0
+        if threads < 1:
+            raise ValueError(
+                f"PERIMETER_TORCH_THREADS must be a positive integer, got {override!r}"
+            )
+        return threads
+    if cpu_limit is None:
+        return None
+    return max(1, int(cpu_limit))
 
 
 class Detector:
@@ -72,7 +155,28 @@ class Detector:
                 f'uv run python -c "from ultralytics import YOLO; '
                 f"YOLO('{self.weights_path}')\""
             )
-        self._model = YOLO(str(self.weights_path))
+        model = YOLO(str(self.weights_path))
+
+        # Run one prediction now: ultralytics finishes its setup (including
+        # resetting the thread count, see above) on the first prediction, so
+        # the thread count can only be set reliably after it. It also means
+        # the first real request doesn't pay that setup cost.
+        model.predict(
+            np.zeros((64, 64, 3), dtype=np.uint8),
+            conf=self.confidence_threshold,
+            verbose=False,
+        )
+        threads = choose_inference_threads(
+            read_cgroup_cpu_limit(), os.environ.get("PERIMETER_TORCH_THREADS")
+        )
+        if threads is not None:
+            torch.set_num_threads(threads)
+        self._model = model
+
+    @property
+    def inference_threads(self) -> int:
+        """PyTorch CPU threads inference is actually using."""
+        return torch.get_num_threads()
 
     @property
     def is_loaded(self) -> bool:

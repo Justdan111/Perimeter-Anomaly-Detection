@@ -14,6 +14,10 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.2.3",
     "ultralytics>=8.4.157",
+    # Direct dependencies only so the Linux source below applies to them;
+    # ultralytics would pull them in anyway.
+    "torch>=2.14.0",
+    "torchvision>=0.29.0",
     "uvicorn[standard]>=0.53.0",
 ]
 
@@ -28,6 +32,19 @@ package = false
 # Both it and `opencv-python-headless` install the same `cv2` module, so the
 # headless build (a direct dependency above) fully satisfies ultralytics.
 exclude-dependencies = ["opencv-python"]
+
+# On Linux (the Docker image), install PyTorch's CPU-only build. The default
+# PyPI build for Linux bundles CUDA — 16 nvidia-* packages, several GB — which
+# a CPU-only host like Render can never use. macOS keeps the PyPI build (it is
+# CPU/MPS only anyway), so local development is unchanged.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
