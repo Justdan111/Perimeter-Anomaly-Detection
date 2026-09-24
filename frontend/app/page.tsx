@@ -215,7 +215,7 @@ function ProcessingState({ since }: { since: number | null }) {
       <span>
         Running detection on the clip… <span className="font-mono tabular-nums">{elapsed.toFixed(1)}s</span>
         <span className="block text-muted">
-          CPU inference: about 5 s on a laptop, and noticeably longer on a free-tier server.
+          CPU-only inference on every frame: about 70 s on the free-tier server this demo runs on (measured), about 4 s on a laptop.
         </span>
       </span>
     </div>
