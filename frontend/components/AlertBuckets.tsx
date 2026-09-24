@@ -10,6 +10,9 @@ import {
   touchesBottomEdge,
 } from "@/lib/alerts";
 import { apiUrl } from "@/lib/api";
+import { colorLabel } from "@/lib/filters";
+
+import { ColorSwatch } from "./ColorSwatch";
 
 import { EdgeBadge } from "./EdgeNote";
 import { ZoneOverlay } from "./ZoneOverlay";
@@ -21,6 +24,8 @@ interface Props {
   zonePoints: [number, number][];
   /** Clip length, so the last bucket's label doesn't run past the end. */
   clipDurationS: number;
+  /** Shown when there are no buckets (e.g. because filters hide everything). */
+  emptyMessage?: string;
 }
 
 const fmt = (s: number) => `${s.toFixed(1)}s`;
@@ -31,12 +36,13 @@ export function AlertBuckets({
   frameHeight,
   zonePoints,
   clipDurationS,
+  emptyMessage = "No alerts: nothing entered the zone.",
 }: Props) {
   // With a whole-frame zone a box cut off by the frame edge is inside either
   // way, so the frame-edge warning can't apply (and ZonePanel says so).
   const edgeMatters = !isWholeFrameZone(zonePoints, frameWidth, frameHeight);
   if (buckets.length === 0) {
-    return <p className="text-sm text-muted">No alerts: nothing entered the zone.</p>;
+    return <p className="text-sm text-muted">{emptyMessage}</p>;
   }
   return (
     <ol className="space-y-2" data-testid="buckets">
@@ -129,6 +135,19 @@ function FrameCard({
           {frame.alerts.map((a, i) => (
             <li key={i} className="flex flex-wrap items-center gap-2">
               <span className="font-medium">{a.class_name}</span>
+              {colorLabel(a) && (
+                <span className="flex items-center gap-1 text-xs" data-testid="alert-color">
+                  {a.class_name === "person" ? (
+                    <>
+                      <ColorSwatch color={a.upper_color} />
+                      <ColorSwatch color={a.lower_color} />
+                    </>
+                  ) : (
+                    <ColorSwatch color={a.color} />
+                  )}
+                  {colorLabel(a)}
+                </span>
+              )}
               <span className="font-mono text-xs tabular-nums text-muted">
                 {(a.confidence * 100).toFixed(0)}%
               </span>

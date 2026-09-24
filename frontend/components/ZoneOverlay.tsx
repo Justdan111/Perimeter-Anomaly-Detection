@@ -20,6 +20,12 @@ interface Props {
 
 const VEHICLES = new Set(["car", "truck", "bus", "motorcycle"]);
 
+function boxColor(className: string): string {
+  if (className === "person") return "rgb(56 189 248)"; // sky
+  if (VEHICLES.has(className)) return "rgb(245 158 11)"; // amber
+  return "rgb(192 132 252)"; // violet: bicycles, animals, bags
+}
+
 /**
  * An image with the zone polygon (and optionally detection boxes) drawn over
  * it. The SVG's viewBox is the zone's own frame size, so coordinates are
@@ -62,7 +68,7 @@ export function ZoneOverlay({
           strokeLinejoin="round"
         />
         {boxes.map(({ bbox: [x1, y1, x2, y2], anchor: [ax, ay], className }, i) => {
-          const color = VEHICLES.has(className) ? "rgb(245 158 11)" : "rgb(56 189 248)";
+          const color = boxColor(className);
           return (
             <g key={i}>
               <rect

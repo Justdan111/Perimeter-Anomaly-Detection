@@ -90,7 +90,8 @@ export const getAlerts = (clipId: string) => request<AlertsResponse>(`/clips/${c
 
 // --- uploads and jobs (Phase 1) ----------------------------------------------------
 
-export type ClassChoice = "person" | "vehicle" | "both";
+// What an uploader can choose to alert on (GET /uploads/limits lists them).
+export type ClassChoice = string;
 
 export interface UploadLimits {
   max_bytes: number;
@@ -106,7 +107,7 @@ export interface Job {
   job_id: string;
   status: "queued" | "processing" | "complete" | "failed";
   filename: string;
-  classes: ClassChoice;
+  classes: ClassChoice[];
   clip: { width: number; height: number; fps: number; frame_count: number; duration_s: number };
   zone: Zone;
   sample_fps: number | null;
@@ -135,13 +136,13 @@ export const getJobAlerts = (jobId: string) => request<AlertsResponse>(`/jobs/${
  */
 export function uploadClip(
   file: File,
-  classes: ClassChoice,
+  classes: ClassChoice[],
   onProgress: (fraction: number) => void,
 ): Promise<Job> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append("file", file);
-    form.append("classes", classes);
+    for (const c of classes) form.append("classes", c);
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", apiUrl("/uploads"));

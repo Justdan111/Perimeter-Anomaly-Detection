@@ -11,6 +11,7 @@ pass silently. Each of those names the mistake it guards against, and was run
 against a deliberately broken implementation to confirm it goes red.
 """
 
+import numpy as np
 import pytest
 
 from app.models.schemas import Detection, Zone
@@ -289,7 +290,9 @@ class TestClassGroups:
         # quietly add or drop a class.
         assert CLASS_GROUPS["person"] == {"person"}
         assert CLASS_GROUPS["vehicle"] == {"car", "truck", "bus", "motorcycle"}
-        assert CLASS_GROUPS["both"] == ALLOWED_CLASSES
+        # "both" is now a legacy alias (Phase 1 records), resolved by
+        # classes_for; the guarantee is the same.
+        assert classes_for(["both"]) == ALLOWED_CLASSES
         assert CLASS_GROUPS["person"] | CLASS_GROUPS["vehicle"] == ALLOWED_CLASSES
         assert not CLASS_GROUPS["person"] & CLASS_GROUPS["vehicle"]
 
@@ -341,3 +344,114 @@ class TestCountSampledFrames:
         for frames, rate in [(120, None), (1800, 2.0), (1799, 2.0), (300, 1.0), (10, 60.0)]:
             expected = sum(should_sample(i, fps, rate) for i in range(frames))
             assert count_sampled_frames(frames, fps, rate) == expected
+
+
+# --- Phase 2: more classes, colour on every alert ------------------------------------------
+
+from app.services.clip_processor import SELECTABLE_CLASSES, add_colors, classes_for  # noqa: E402
+
+
+class TestPhase2Classes:
+    def test_new_classes_are_selectable(self):
+        for name in ("bicycle", "dog", "cat", "backpack", "handbag", "suitcase"):
+            assert CLASS_GROUPS[name] == {name}
+        assert set(SELECTABLE_CLASSES) == {
+            "person", "vehicle", "bicycle", "dog", "cat", "backpack", "handbag", "suitcase",
+        }
+
+    def test_default_filter_is_unchanged_so_the_sample_clip_still_ignores_bags(self):
+        # Day 2: a handbag in the zone must not raise an intrusion alert on
+        # the sample clip. New classes are opt-in at upload, not the default.
+        assert ALLOWED_CLASSES == {"person", "car", "truck", "bus", "motorcycle"}
+        dets = [det("handbag", bbox=(550.0, 400.0, 600.0, 450.0))]
+        assert alerts_for_frame(dets, ZONE, 0, 24.0, "f.jpg") == []
+
+    def test_classes_for_unions_the_selection(self):
+        assert classes_for(["person", "dog"]) == {"person", "dog"}
+        assert classes_for(["vehicle", "suitcase"]) == {"car", "truck", "bus", "motorcycle", "suitcase"}
+
+    def test_legacy_phase1_choices_still_resolve(self):
+        # Phase 1 job records stored "person" | "vehicle" | "both".
+        assert classes_for(["both"]) == ALLOWED_CLASSES
+        assert classes_for("vehicle") == {"car", "truck", "bus", "motorcycle"}
+
+    @pytest.mark.parametrize("bad", [[], ["giraffe"], ["person", "carrot"]])
+    def test_unknown_or_empty_selection_is_an_error(self, bad):
+        with pytest.raises(ValueError):
+            classes_for(bad)
+
+
+def frame_with(regions, h=720, w=1280):
+    """A grey frame with solid-colour rectangles: {(x1,y1,x2,y2): bgr}."""
+    frame = np.full((h, w, 3), 120, dtype=np.uint8)
+    for (x1, y1, x2, y2), bgr in regions.items():
+        frame[y1:y2, x1:x2] = bgr
+    return frame
+
+
+def alert_for(cls, bbox):
+    return alerts_for_frame(
+        [det(cls, bbox=bbox)], whole_frame_zone(1280, 720), 0, 24.0, "f.jpg",
+        allowed_classes=CLASS_GROUPS["vehicle"] | CLASS_GROUPS["person"] | {"handbag"},
+    )[0]
+
+
+class TestAddColors:
+    def test_vehicle_gets_its_body_colour_from_the_raw_frame(self):
+        frame = frame_with({(100, 100, 400, 300): (20, 20, 200)})
+        [a] = add_colors([alert_for("car", (100.0, 100.0, 400.0, 300.0))], frame)
+        assert a.color == "red"
+        assert a.upper_color is None and a.lower_color is None
+
+    def test_person_gets_upper_and_lower_not_a_single_colour(self):
+        frame = frame_with({
+            (600, 100, 680, 280): (200, 90, 20),  # shirt, blue
+            (600, 280, 680, 420): (15, 15, 15),  # trousers, black
+        })
+        [a] = add_colors([alert_for("person", (600.0, 60.0, 680.0, 440.0))], frame)
+        assert (a.upper_color, a.lower_color) == ("blue", "black")
+        assert a.color is None
+
+    def test_any_other_object_uses_the_same_primitive(self):
+        frame = frame_with({(900, 500, 960, 560): (0, 215, 230)})
+        [a] = add_colors([alert_for("handbag", (900.0, 500.0, 960.0, 560.0))], frame)
+        assert a.color == "yellow"
+
+    def test_each_alert_is_coloured_from_its_own_box(self):
+        frame = frame_with({(100, 100, 300, 250): (20, 20, 200), (700, 100, 900, 250): (200, 90, 20)})
+        a, b = add_colors(
+            [alert_for("car", (100.0, 100.0, 300.0, 250.0)), alert_for("car", (700.0, 100.0, 900.0, 250.0))],
+            frame,
+        )
+        assert (a.color, b.color) == ("red", "blue")
+
+    def test_box_partly_outside_the_frame_is_clipped_not_an_error(self):
+        frame = frame_with({(1200, 600, 1280, 720): (20, 20, 200)})
+        [a] = add_colors([alert_for("car", (1200.0, 600.0, 1280.0, 720.0))], frame)
+        assert a.color == "red"
+
+    def test_alert_without_colour_fields_still_validates(self):
+        # Phase 1 result.json records in R2 have no colour fields.
+        from app.models.schemas import Alert
+
+        legacy = {k: v for k, v in alert_for("car", (1.0, 1.0, 50.0, 50.0)).model_dump().items()
+                  if k not in ("color", "upper_color", "lower_color")}
+        a = Alert.model_validate(legacy)
+        assert a.color is None and a.upper_color is None and a.lower_color is None
+
+
+class TestMonochromeFramesInThePipeline:
+    def test_alerts_in_a_black_and_white_frame_get_unknown_colours(self):
+        frame = np.full((720, 1280, 3), 200, dtype=np.uint8)  # a white "car", no colour anywhere
+        frame[300:500, 300:500] = 30  # and a dark "person"
+        car, person = add_colors(
+            [alert_for("car", (100.0, 100.0, 250.0, 200.0)), alert_for("person", (300.0, 300.0, 500.0, 500.0))],
+            frame,
+        )
+        assert car.color == "unknown"  # not "white": there's no colour to read
+        assert (person.upper_color, person.lower_color) == ("unknown", "unknown")
+
+    def test_colour_frames_are_unaffected(self):
+        frame = frame_with({(100, 100, 400, 300): (20, 20, 200)})
+        [a] = add_colors([alert_for("car", (100.0, 100.0, 400.0, 300.0))], frame)
+        assert a.color == "red"
