@@ -10,6 +10,8 @@ The TestClient is used without a `with` block on purpose — that skips the
 app's lifespan hook, so the real model is never loaded.
 """
 
+import threading
+
 import cv2
 import numpy as np
 import pytest
@@ -154,12 +156,24 @@ def test_leftover_snapshot_files_are_not_served_without_a_result(client, tmp_pat
     assert client.get("/clips/sample/snapshots/frame_00000.jpg").status_code == 404
 
 
-def test_concurrent_process_request_is_409(client):
+def test_process_request_while_the_lock_is_held_is_409_immediately(client):
+    # The request runs on a daemon thread with a deadline: if the endpoint
+    # ever waited for the lock instead of refusing, this must FAIL ("hung"),
+    # not hang the whole test run — which is what the first version of this
+    # test did when a blocking acquire was planted in the endpoint.
     assert main._processing_lock.acquire(blocking=False)
+    statuses: list[int] = []
     try:
-        assert client.post("/clips/sample/process").status_code == 409
+        worker = threading.Thread(
+            target=lambda: statuses.append(client.post("/clips/sample/process").status_code),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "request hung waiting for the lock instead of returning 409"
     finally:
         main._processing_lock.release()
+    assert statuses == [409]
 
 
 def test_cors_allows_the_dashboard_origin(client):

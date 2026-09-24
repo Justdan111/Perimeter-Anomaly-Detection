@@ -14,6 +14,7 @@ results live in memory — a restart forgets them, and processing again
 replaces them. No upload, no persistence, no live input (see docs/PROJECT.md).
 """
 
+import logging
 import os
 import shutil
 import threading
@@ -30,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from app.models.schemas import Alert, ClipResult, Zone
 from app.services.clip_processor import (
+    ClipReadError,
     FrameDetector,
     FrameSizeMismatchError,
     load_zone,
@@ -69,7 +71,12 @@ CLIPS: dict[str, ClipSource] = {
     ),
 }
 
+logger = logging.getLogger(__name__)
+
 detector = Detector()
+# Why the model failed to load at startup, if it did. Reported by /health
+# and in the 503 that processing requests get.
+model_load_error: str | None = None
 
 # Last result per clip. Guarded by _processing_lock for writes.
 _results: dict[str, ClipResult] = {}
@@ -82,12 +89,22 @@ _processing_lock = threading.Lock()
 async def lifespan(app: FastAPI):
     """Load the model at startup rather than on the first request.
 
-    Loading YOLO26-N takes a few seconds. Paying that cost at startup means
-    the first real request isn't the one that waits for it, and it means a
-    missing weights file fails loudly at boot instead of halfway through
-    processing a clip.
+    Loading YOLO26-N takes a few seconds; paying that at startup means the
+    first real request isn't the one that waits for it.
+
+    If loading fails (weights missing or corrupt), the service still starts,
+    in a degraded state: /health reports `model_loaded: false` with the
+    reason, processing requests get a 503 saying the same, and the error is
+    logged. That is louder than refusing to boot — a host polling /health
+    (Day 5) sees why, instead of a crash loop with the reason only in logs.
     """
-    detector.load()
+    global model_load_error
+    try:
+        detector.load()
+        model_load_error = None
+    except Exception as e:  # ultralytics raises TypeError, UnpicklingError, ...
+        model_load_error = f"{type(e).__name__}: {e}"
+        logger.error("model failed to load; service is degraded: %s", model_load_error)
     yield
 
 
@@ -109,7 +126,18 @@ app.add_middleware(
 
 
 def get_detector() -> FrameDetector:
-    """The detector endpoints use. Overridden in tests with a fake."""
+    """The detector endpoints use. Overridden in tests with a fake.
+
+    Refuses with 503 when the model isn't loaded, rather than letting
+    `Detector.detect` retry the load mid-request and fail with a bare 500.
+    """
+    if not detector.is_loaded:
+        reason = model_load_error or "it has not been loaded"
+        raise HTTPException(
+            503,
+            f"model not loaded ({reason}); fix {detector.weights_path.name} "
+            f"and restart the service",
+        )
     return detector
 
 
@@ -133,6 +161,9 @@ class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
     model_weights: str
+    model_error: str | None = Field(
+        description="Why the model failed to load at startup; null when loaded."
+    )
 
 
 class ClipInfo(BaseModel):
@@ -183,6 +214,7 @@ def health() -> HealthResponse:
         status="ok" if detector.is_loaded else "degraded",
         model_loaded=detector.is_loaded,
         model_weights=detector.weights_path.name,
+        model_error=model_load_error,
     )
 
 
@@ -238,6 +270,15 @@ def process(
             # The committed clip and its zone disagree: a server config
             # error, not something the caller did wrong.
             raise HTTPException(500, str(e)) from e
+        except (ClipReadError, FileNotFoundError) as e:
+            # Also server-side: the clip is a file the server is configured
+            # with, not something the caller sent. 500, but with the reason.
+            raise HTTPException(500, f"clip could not be read: {e}") from e
+        except OSError as e:
+            # After the clip branch above, which catches FileNotFoundError (a
+            # subclass): what's left is the output side — disk full,
+            # permissions — while writing snapshots.
+            raise HTTPException(500, f"could not write snapshots: {e}") from e
         _results[clip_id] = result
     finally:
         _processing_lock.release()

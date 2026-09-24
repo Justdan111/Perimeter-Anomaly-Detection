@@ -8,7 +8,6 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.141.1",
-    "httpx>=0.28.1",
     "opencv-python-headless>=5.0.0.93",
     "pillow>=12.3.0",
     "pydantic>=2.13.5",
@@ -24,14 +23,23 @@ dependencies = [
 # the app/ layout the architecture in docs/PROJECT.md specifies.
 [tool.uv]
 package = false
+# `ultralytics` depends on the GUI build `opencv-python`, which drags in
+# Qt/GUI libraries a server never uses and would bloat the Day 5 Docker image.
+# Both it and `opencv-python-headless` install the same `cv2` module, so the
+# headless build (a direct dependency above) fully satisfies ultralytics.
+exclude-dependencies = ["opencv-python"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Put the project root on sys.path so tests import `app.services.zone_check`
 # the same way the running service does.
 pythonpath = ["."]
+# Fail on deprecation warnings instead of printing them, so a new one is fixed
+# when it appears rather than accumulating in the output unread.
+filterwarnings = ["error::DeprecationWarning"]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13.1",
     "pytest>=8.0.0",
 ]
