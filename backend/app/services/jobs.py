@@ -346,12 +346,28 @@ class JobRunner:
     def _save_results(self, job: Job, result: ClipResult) -> ClipResult:
         """Upload snapshots, then the alerts with store keys in place of filenames."""
         try:
-            for filename in sorted({a.snapshot for a in result.alerts}):
-                self.store.put_file(
-                    snapshot_key(job.job_id, filename),
-                    job.work_dir / "snapshots" / filename,
-                    "image/jpeg",
-                )
+            # In parallel: one at a time, each upload to R2 took ~0.48 s on
+            # Render (latency, not bandwidth) — 55 s of saving for a 56 s
+            # clip. boto3 clients are thread-safe; 8 workers stay within its
+            # default pool of 10 connections.
+            filenames = sorted({a.snapshot for a in result.alerts})
+            pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="snapshot-upload")
+            try:
+                futures = [
+                    pool.submit(
+                        self.store.put_file,
+                        snapshot_key(job.job_id, filename),
+                        job.work_dir / "snapshots" / filename,
+                        "image/jpeg",
+                    )
+                    for filename in filenames
+                ]
+                for future in futures:
+                    future.result()  # re-raises the first upload failure
+            finally:
+                # On failure: cancel what hasn't started and wait for what
+                # has, so the cleanup below can't race an in-flight upload.
+                pool.shutdown(wait=True, cancel_futures=True)
             stored = result.model_copy(
                 update={
                     "alerts": [

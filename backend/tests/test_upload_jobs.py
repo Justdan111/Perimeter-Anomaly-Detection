@@ -553,13 +553,26 @@ class TestStorageFailures:
         self, client, store, tmp_path
     ):
         original = store.put_file
+        lock = threading.Lock()
         calls = {"n": 0}
 
         def flaky_put_file(key, path, content_type):
             if "/snapshots/" in key:
-                calls["n"] += 1
-                if calls["n"] == 3:  # fail partway through the snapshots
+                with lock:
+                    calls["n"] += 1
+                    n = calls["n"]
+                if n == 1:  # the first snapshot upload fails, immediately
                     raise ConnectionError("simulated R2 outage")
+                # ...while the others are in flight. Like a real upload, they
+                # have already read the file (boto3 opens it before the
+                # network wait), so deleting the work folder doesn't stop
+                # them: cleanup must wait for them, or they land after it and
+                # leave orphans. (A fake that slept *before* reading hid the
+                # bug entirely: the file was gone by the time it woke.)
+                held = tmp_path / f"in-flight-{n}.jpg"
+                held.write_bytes(path.read_bytes())
+                time.sleep(0.5)
+                return original(key, held, content_type)
             return original(key, path, content_type)
 
         store.put_file = flaky_put_file
@@ -567,6 +580,11 @@ class TestStorageFailures:
         status = wait_for(client, job_id)
         assert status["status"] == "failed"
         assert "could not be saved to storage" in status["error"]
+        # Give any upload that outlived the cleanup time to land, then check.
+        # (A first version failed the 3rd upload; by the time it was noticed
+        # the others had finished, so a planted "don't wait" bug was caught
+        # only 1 run in 5.)
+        time.sleep(1.0)
         assert not any("/snapshots/" in k for k in stored_keys(store))
         assert work_files(tmp_path) == []
 
@@ -585,3 +603,23 @@ class TestStorageFailures:
         assert r.status_code == 503
         assert work_files(tmp_path) == []
         assert main.jobs.active_count() == 0  # not left counting against the queue
+
+
+def test_snapshots_are_uploaded_in_parallel(client, store, monkeypatch):
+    # Measured on Render: one-at-a-time uploads to R2 took ~0.48 s per
+    # snapshot — 55 s of a 56 s clip's job was spent saving, not processing.
+    # With each upload taking 0.2 s here, 10 snapshots one after another
+    # would take 2 s; in parallel they take a fraction of that.
+    original = store.put_file
+
+    def slow_put_file(key, path, content_type):
+        if "/snapshots/" in key:
+            time.sleep(0.2)
+        return original(key, path, content_type)
+
+    store.put_file = slow_put_file
+    job_id = upload(client).json()["job_id"]
+    status = wait_for(client, job_id)
+    assert status["status"] == "complete"
+    saving = status["finished_at"] - status["started_at"] - status["processing_time_s"]
+    assert saving < 1.2, f"saving 10 snapshots took {saving:.2f}s — not parallel"
