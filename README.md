@@ -5,8 +5,9 @@ alert, with a snapshot, whenever one is inside a configured zone — so a person
 reviews the moments that matter instead of hours of footage.
 
 **Live demo:** https://perimeter-anomaly-detection.vercel.app — upload your
-own clip (up to 60 s), choose people, vehicles or both, and get back
-timestamped alerts with snapshots; or run the built-in sample clip. Expect
+own clip (up to 60 s), choose what to look for (people, vehicles, bicycles,
+animals, bags), and get back timestamped alerts with snapshots and colours —
+filterable by class and colour; or run the built-in sample clip. Expect
 about **1 minute for a 20 s clip and 4 minutes for a 1-minute 1080p clip**
 (see [Uploads](#uploads--limits-and-measured-timing)).
 Backend: https://perimeter-backend-ax3a.onrender.com/health
@@ -40,19 +41,22 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
   would take).
 - **No drawn zones for uploads.** An uploaded clip is watched across the whole
   frame; there is no zone editor yet. Only the sample clip has a drawn zone.
-- **No colour, clothing or vehicle-type filters** (Phase 2), and **no licence
-  plate recognition** (not planned).
-- **Only people and vehicles.** The model can see 80 object types; alerts are
-  deliberately limited to `person`, `car`, `truck`, `bus` and `motorcycle`
-  (everything else — traffic lights, handbags — is dropped before the zone
-  check).
+- **No car make/model** (a possible later phase, low-confidence), and **no
+  licence plate recognition** (not planned).
+- **A limited set of things to look for.** The model can see 80 object types;
+  uploads can alert on people, vehicles (car, truck, bus, motorcycle),
+  bicycles, dogs, cats, backpacks, handbags and suitcases. The sample clip
+  sticks to people and vehicles, so a handbag in its zone is not an
+  "intrusion".
+- **Colours are estimates, not facts** — see [Colours](#colours--what-they-are-and-where-they-break).
 - **No tracking across frames**, and **no identification** of who someone is:
   it only ever answers "something entered the zone".
 
 ## Uploads — limits and measured timing
 
-Upload a clip, choose **people**, **vehicles** (car, truck, bus, motorcycle)
-or **both**, and the whole frame is watched. Processing runs as a background
+Upload a clip, choose what to alert on — **people**, **vehicles** (car, truck,
+bus, motorcycle), **bicycles**, **dogs**, **cats**, **backpacks**, **handbags**,
+**suitcases**, any combination — and the whole frame is watched. Processing runs as a background
 job: the upload returns a job id immediately and the dashboard polls for
 progress (`queued` → `processing` → `complete` / `failed`). The page URL
 carries the job id (`?job=…`), so it can be reloaded or come back to later.
@@ -102,6 +106,68 @@ deleted after **7 days** by a lifecycle rule on the bucket.
 
 **Privacy.** There are no accounts. A job's results are visible to anyone who
 has its link (the id is 128 random bits, so it can't be guessed), for 7 days.
+
+## Colours — what they are, and where they break
+
+Every alert records a colour: **one colour** for a vehicle or object, **top
+and bottom clothing colours** for a person. The results view can filter by
+class and colour ("red cars", "people with a blue top").
+
+**How:** plain HSV thresholds over the pixels in the middle of the detection
+box (the edges are mostly background), computed on the full-resolution frame
+while the clip is processed. No extra model. The answer is one of 11 fixed
+names — black, white, gray, red, orange, yellow, green, blue, purple, pink,
+brown (silver cars read as gray) — or:
+- **mixed**: no colour clearly dominates (a two-tone car, a patterned top);
+- **unknown**: too little to judge — a tiny box, a person under 150 px tall,
+  or a black-and-white (infrared) frame.
+
+Neither is ever matched by a colour filter: when the answer is uncertain, the
+alert is left out of a colour search rather than put in the wrong one.
+
+**Measured on real footage** — crops from the 56 s daytime source clip,
+labelled by eye; rules were tuned on one set and checked on a separate,
+held-out set (the held-out numbers are the honest ones):
+
+| | Right | "mixed" / unknown | Wrong | Precision when a colour is named |
+|---|---|---|---|---|
+| Vehicles, held-out (32) | 22 | 8 | 2 | **92%** |
+| Clothing, held-out people ≥150 px (42 regions) | 28 | 11 | 3 | **90%** |
+
+Checked by eye through the dashboard: of the first 40 "blue car" results on
+the same clip, about 33 were blue, navy or teal cars and about 5 were white
+or silver cars in shade.
+
+**Where it holds up:** daylight; strongly coloured cars and clothes (red,
+blue, orange, green); black cars and black clothing; white cars and shirts
+with some sun on them; black bags.
+
+**Where it visibly doesn't** (seen on real footage, not guessed):
+- **White in shade reads blue.** Shade outdoors is lit by the sky, which
+  tints white and silver faintly blue — the main source of wrong "blue cars".
+  A rule to correct it was tried and rejected: it fixed those but caused more
+  errors elsewhere.
+- **Night, under street lights** (a CC BY-SA 4.0 street clip): red and black
+  cars were still right, but **white cars read gray** (4 of 5) — they never
+  get bright enough.
+- **Dusk / warm light** (a CC BY 3.0 time-lapse): a **white truck read pink**
+  — exactly the "white car under a sunset" failure.
+- **Infrared night mode** (a public-domain Dahua CCTV sample): the image is
+  black and white, so there is no colour to read. The whole frame is detected
+  as black-and-white and every colour is reported as **unknown** instead of
+  "gray" — so night footage from most security cameras simply has no colours.
+- **Small objects include what's around them:** a handbag's box contains the
+  person carrying it, so a black bag against denim can read blue.
+- **Patterned clothing, bare legs under shorts, people half-hidden behind
+  others**: usually "mixed", sometimes wrong.
+- **Distant people** (<150 px tall): no clothing colour is given — on real
+  footage they produced far more false "blue tops" than larger people.
+
+**Cost:** colour extraction measured at **0.36 ms per alert** on a laptop and
+**0.63 ms** in the container limited to 1 CPU — about 0.8 s for the 1,286
+alerts of the 56 s clip, against ~21 s of processing there (~4%, within
+run-to-run noise). Re-measuring on the deployed free tier is the next step
+(see the PR for Phase 2).
 
 ## License — AGPL-3.0, and what it means
 
@@ -238,7 +304,7 @@ requests return `503` with the same message.
 ## Tests
 
 ```sh
-cd backend && uv run pytest        # 268 tests; no model weights, no bucket needed
+cd backend && uv run pytest        # 361 tests; no model weights, no bucket, no network
 cd frontend && npm test            # alert grouping logic
 
 # Inside the Docker image, as its non-root user:
