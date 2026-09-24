@@ -59,6 +59,7 @@ not a guess made here.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Iterable
@@ -70,6 +71,8 @@ import numpy as np
 
 from app.models.schemas import Alert, ClipResult, Detection, Point, Zone
 from app.services.zone_check import point_in_polygon
+
+logger = logging.getLogger(__name__)
 
 # COCO class labels that count as an intrusion. Everything else the model
 # sees — on the sample clip that is mostly "traffic light", "handbag" and
@@ -98,6 +101,10 @@ _SNAPSHOT_JPEG_QUALITY = 70
 
 class FrameSizeMismatchError(ValueError):
     """The clip's frames are not the size the zone was drawn against."""
+
+
+class ClipReadError(ValueError):
+    """The clip file can't be opened or decoded to the end."""
 
 
 class FrameDetector(Protocol):
@@ -252,8 +259,13 @@ def process_clip(
 
     Raises:
         FileNotFoundError: The clip doesn't exist.
-        ValueError: OpenCV can't open the clip or reports no usable fps.
+        ClipReadError: OpenCV can't open the clip, it reports no usable
+            fps, or it stops decoding before the frame count in its own
+            header (a truncated or corrupt file).
         FrameSizeMismatchError: The clip's frame size isn't the zone's.
+
+    On any failure, snapshots this call already wrote are deleted, so a
+    failed run never leaves a partial set behind for something to serve.
     """
     clip_path = Path(clip_path)
     snapshot_dir = Path(snapshot_dir)
@@ -263,13 +275,14 @@ def process_clip(
         raise ValueError(f"sample_fps must be positive or None, got {sample_fps}")
 
     capture = cv2.VideoCapture(str(clip_path))
+    written: list[Path] = []
     try:
         if not capture.isOpened():
-            raise ValueError(f"OpenCV could not open clip: {clip_path}")
+            raise ClipReadError(f"OpenCV could not open {clip_path.name} as a video")
 
         clip_fps = capture.get(cv2.CAP_PROP_FPS)
         if not clip_fps or clip_fps <= 0:
-            raise ValueError(f"clip reports no usable fps ({clip_fps}): {clip_path}")
+            raise ClipReadError(f"{clip_path.name} reports no usable fps ({clip_fps})")
 
         # Fail before any inference if the container's declared size is
         # wrong. Each decoded frame is checked too (below): the header can
@@ -279,6 +292,7 @@ def process_clip(
             int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             zone,
         )
+        declared_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         alerts: list[Alert] = []
@@ -286,10 +300,10 @@ def process_clip(
         frames_processed = 0
         started = time.perf_counter()
 
-        # Read until the decoder runs out rather than trusting
-        # CAP_PROP_FRAME_COUNT, which is an estimate for some containers.
-        # Every frame is decoded even when sampling: seeking is unreliable
-        # across codecs, and decoding is cheap next to inference.
+        # Read until the decoder runs out; the header's frame count is only
+        # used afterwards, as a check. Every frame is decoded even when
+        # sampling: seeking is unreliable across codecs, and decoding is
+        # cheap next to inference.
         frame_index = 0
         while True:
             ok, frame = capture.read()
@@ -309,9 +323,29 @@ def process_clip(
 
                 if frame_alerts:
                     _write_snapshot(snapshot_dir / snapshot, frame)
+                    written.append(snapshot_dir / snapshot)
                     alerts.extend(frame_alerts)
 
             frame_index += 1
+
+        # `read()` returning False means "no more frames" and "can't decode
+        # the rest" alike. A truncated file opens fine and its header still
+        # declares the full length, so without this check it would return
+        # a result for the first part as if that were the whole clip.
+        # Checked against re-encodes of the sample clip as MP4, WebM, MKV,
+        # AVI (MJPEG), MPEG-TS and a variable-frame-rate MP4: in every case
+        # the header count matched the decoded count exactly. If some other
+        # file's header over-estimates its length, this raises a false
+        # error: loud, and the message says what was compared. A count of
+        # 0 or less means "unknown" and skips the check.
+        if declared_frames > 0 and frames_read < declared_frames:
+            raise ClipReadError(
+                f"{clip_path.name} decoded {frames_read} of {declared_frames} frames "
+                f"declared in its header; the file is truncated or corrupt"
+            )
+    except BaseException:
+        _remove_snapshots(written)
+        raise
     finally:
         capture.release()
 
@@ -323,6 +357,23 @@ def process_clip(
         processing_time_s=time.perf_counter() - started,
         alerts=alerts,
     )
+
+
+def _remove_snapshots(paths: list[Path]) -> None:
+    """Best-effort delete of a failed run's snapshots.
+
+    Never raises: this runs while another exception is propagating, and if
+    the directory has become unwritable (the likely cause of a write
+    failure in the first place), deleting fails too. That second error must
+    not replace the first in what the caller sees. Files that can't be
+    removed are logged; they are also never served, because the API only
+    serves snapshots belonging to a successful run.
+    """
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("could not remove snapshot from failed run: %s (%s)", path, e)
 
 
 def _write_snapshot(path: Path, frame: np.ndarray) -> None:

@@ -152,8 +152,10 @@ export default function Dashboard() {
               <div className="flex flex-wrap items-end justify-between gap-3 rounded-lg border border-line bg-panel px-4 py-3">
                 <div>
                   <div className="text-lg font-semibold" data-testid="totals">
-                    {result.alerts.length} alerts{" "}
-                    <span className="font-normal">· {formatCounts(totals)}</span>
+                    {result.alerts.length} alerts
+                    {totals.length > 0 && (
+                      <span className="font-normal"> · {formatCounts(totals)}</span>
+                    )}
                   </div>
                   <div className="text-sm text-muted">
                     {result.frames_processed} of {result.frames_read} frames processed in{" "}

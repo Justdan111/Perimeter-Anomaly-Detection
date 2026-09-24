@@ -65,9 +65,12 @@ class Detector:
         if not self.weights_path.exists():
             raise FileNotFoundError(
                 f"YOLO26-N weights not found at {self.weights_path}. "
+                # Ultralytics downloads a missing named checkpoint to the
+                # exact path given, so name the path the service loads from.
+                # (A bare 'yolo26n.pt' would land in the current directory.)
                 f"Fetch them with: "
                 f'uv run python -c "from ultralytics import YOLO; '
-                f"YOLO('yolo26n.pt')\""
+                f"YOLO('{self.weights_path}')\""
             )
         self._model = YOLO(str(self.weights_path))
 
