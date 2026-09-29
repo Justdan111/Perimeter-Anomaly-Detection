@@ -68,11 +68,17 @@ class MakeModelClassifier:
             import torch
 
             started = time.perf_counter()
-            ck = torch.load(self.weights, map_location="cpu", weights_only=True)
-            model = timm.create_model(
-                "efficientnet_b4", pretrained=False, num_classes=len(ck["class_mapping"])
-            )
-            model.load_state_dict(ck["model_state"])
+            # Lean load: memory-map the checkpoint and build the model on the
+            # meta device, then adopt the mapped tensors (assign=True), so
+            # the ~134 MB of weights exist once, not twice (checkpoint + a
+            # randomly initialised model) — the first version of this was
+            # killed for memory on the free tier.
+            ck = torch.load(self.weights, map_location="cpu", weights_only=True, mmap=True)
+            with torch.device("meta"):
+                model = timm.create_model(
+                    "efficientnet_b4", pretrained=False, num_classes=len(ck["class_mapping"])
+                )
+            model.load_state_dict(ck["model_state"], assign=True)
             model.eval()
             self._names = ck["class_mapping"]
             self._model = model
