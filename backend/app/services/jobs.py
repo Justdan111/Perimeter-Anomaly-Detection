@@ -51,6 +51,7 @@ from app.services.clip_processor import (
     count_sampled_frames,
     process_clip,
 )
+from app.services.make_model import ExperimentStats, MakeModelClassifier
 from app.services.storage import ObjectStore
 from app.services.uploads import ClipProbe
 
@@ -108,6 +109,10 @@ class Job:
     finished_at: float | None = None
     error: str | None = None
     processing_time_s: float | None = None
+    # EXPERIMENT (Stage 3a timing branch): run the make/model classifier too,
+    # and what it measured (peak memory is recorded for every job).
+    experiment_make_model: bool = False
+    experiment: dict | None = None
     # Local, temporary: only set while this process is running the job.
     work_dir: Path | None = None
 
@@ -137,6 +142,8 @@ class Job:
             "finished_at": self.finished_at,
             "error": self.error,
             "processing_time_s": self.processing_time_s,
+            "experiment_make_model": self.experiment_make_model,
+            "experiment": self.experiment,
         }
 
     @classmethod
@@ -157,6 +164,8 @@ class Job:
             finished_at=record["finished_at"],
             error=record["error"],
             processing_time_s=record["processing_time_s"],
+            experiment_make_model=record.get("experiment_make_model", False),
+            experiment=record.get("experiment"),
         )
 
 
@@ -201,6 +210,7 @@ class JobRunner:
         self._jobs: dict[str, Job] = {}
         self._results: dict[str, ClipResult] = {}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-job")
+        self._make_model = MakeModelClassifier()
 
     # --- queries ----------------------------------------------------------------------
 
@@ -267,6 +277,7 @@ class JobRunner:
         zone: Zone,
         sample_fps: float | None,
         detector: FrameDetector,
+        experiment_make_model: bool = False,
     ) -> Job:
         """Register a validated upload (its video already at work_dir/upload)."""
         job = Job(
@@ -278,6 +289,7 @@ class JobRunner:
             sample_fps=sample_fps,
             frames_to_process=count_sampled_frames(probe.frame_count, probe.fps, sample_fps),
             work_dir=work_dir,
+            experiment_make_model=experiment_make_model,
         )
         with self._state_lock:
             active = sum(j.status not in FINISHED for j in self._jobs.values())
@@ -314,6 +326,13 @@ class JobRunner:
                 def progress(frames_done: int) -> None:
                     job.frames_processed = frames_done
 
+                stats = ExperimentStats()
+                make_model = None
+                if job.experiment_make_model:
+                    # Loaded before the clip starts, so its one-off load time
+                    # is reported separately, not inside processing_time_s.
+                    self._make_model.load()
+                    make_model = (self._make_model, stats)
                 try:
                     result = process_clip(
                         job.video_path,
@@ -323,7 +342,9 @@ class JobRunner:
                         sample_fps=job.sample_fps,
                         allowed_classes=classes_for(job.classes),
                         on_progress=progress,
+                        make_model=make_model,
                     )
+                    job.experiment = stats.summary(self._make_model.load_s)
                     stored = self._save_results(job, result)
                     with self._state_lock:
                         self._results[job.job_id] = stored

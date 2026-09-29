@@ -56,6 +56,16 @@ YOLO(str(DEFAULT_WEIGHTS)); \
 d = Detector(); d.load(); \
 print('baked', DEFAULT_WEIGHTS, DEFAULT_WEIGHTS.stat().st_size, 'bytes')"
 
+# EXPERIMENT (Stage 3a timing branch): bake the make/model classifier's weights
+# (Jordo23/vehicle-classifier, MIT), pinned to one revision and checked by hash.
+RUN python -c "\
+import hashlib, shutil; from huggingface_hub import hf_hub_download; \
+p = hf_hub_download('Jordo23/vehicle-classifier', 'vehicle_classifier.pth', \
+    revision='7a0a0ee5584202b5eba858cf7464f5ca6b7341b3', cache_dir='/tmp/hf'); \
+h = hashlib.sha256(open(p, 'rb').read()).hexdigest(); \
+assert h == '99e73cd7591a6c3ecad07b50515af50759fa95e5833fa7ddb066f716ab229b76', h; \
+shutil.copy(p, 'models/vehicle_classifier.pth'); shutil.rmtree('/tmp/hf'); print('baked classifier', h)"
+
 # Render sets $PORT; default to 8000 elsewhere. One worker on purpose: the
 # processing lock and the last result live in process memory, so a second
 # worker would have its own lock and its own (empty) results.

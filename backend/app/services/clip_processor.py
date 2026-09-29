@@ -338,6 +338,7 @@ def process_clip(
     sample_fps: float | None = None,
     allowed_classes: Iterable[str] = ALLOWED_CLASSES,
     on_progress: Callable[[int], None] | None = None,
+    make_model=None,
 ) -> ClipResult:
     """Run a clip frame by frame and return every in-zone alert.
 
@@ -355,6 +356,10 @@ def process_clip(
             and vehicles). See `CLASS_GROUPS`.
         on_progress: Called with the number of frames processed so far,
             after each processed frame. For reporting only.
+        make_model: EXPERIMENT (Stage 3a timing branch only): a
+            `(MakeModelClassifier, ExperimentStats)` pair. When given, every
+            car/truck alert's crop is classified in this same pass, so its
+            cost lands in `processing_time_s`. Results go to the stats only.
 
     Raises:
         FileNotFoundError: The clip doesn't exist.
@@ -426,6 +431,8 @@ def process_clip(
                 # Colour from the raw frame, in this same pass, before the
                 # snapshot is written (and later uploaded).
                 frame_alerts = add_colors(frame_alerts, frame)
+                if make_model is not None:
+                    _classify_make_model(frame_alerts, frame, frame_index, *make_model)
                 frames_processed += 1
                 if on_progress is not None:
                     on_progress(frames_processed)
@@ -466,6 +473,26 @@ def process_clip(
         processing_time_s=time.perf_counter() - started,
         alerts=alerts,
     )
+
+
+def _classify_make_model(alerts, frame, frame_index, classifier, stats) -> None:
+    """EXPERIMENT: time the make/model classifier on each car/truck crop."""
+    from app.services.make_model import CLASSIFIED_CLASSES
+
+    height, width = frame.shape[:2]
+    for a in alerts:
+        if a.class_name not in CLASSIFIED_CLASSES:
+            continue
+        x1, y1, x2, y2 = a.bbox
+        crop = frame[
+            max(0, int(y1)) : min(height, int(round(y2))),
+            max(0, int(x1)) : min(width, int(round(x2))),
+        ]
+        if crop.size == 0:
+            continue
+        t0 = time.perf_counter()
+        label, prob = classifier.classify(crop)
+        stats.record((time.perf_counter() - t0) * 1000, frame_index, a.bbox, label, prob)
 
 
 def _remove_snapshots(paths: list[Path]) -> None:

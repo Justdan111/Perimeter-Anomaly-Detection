@@ -319,6 +319,9 @@ class JobResponse(BaseModel):
     finished_at: float | None
     processing_time_s: float | None
     error: str | None
+    experiment: dict | None = Field(
+        default=None, description="EXPERIMENT (Stage 3a timing branch): make/model timing and peak memory."
+    )
     status_url: str
     alerts_url: str
     reference_frame_url: str
@@ -490,6 +493,7 @@ def _job_response(job: Job) -> JobResponse:
         finished_at=job.finished_at,
         processing_time_s=job.processing_time_s,
         error=job.error,
+        experiment=job.experiment,
         status_url=base,
         alerts_url=f"{base}/alerts",
         # A signed, expiring R2 link in production; an API route locally.
@@ -553,6 +557,7 @@ def create_upload(
         ),
     ],
     detector: Annotated[FrameDetector, Depends(get_detector)],
+    experiment_make_model: Annotated[bool, Form(description="EXPERIMENT: also time the make/model classifier.")] = False,
 ) -> JobResponse:
     """Validate and store an uploaded clip, then queue it for processing.
 
@@ -602,6 +607,7 @@ def create_upload(
                 zone=whole_frame_zone(probe.width, probe.height),
                 sample_fps=UPLOAD_SAMPLE_FPS,
                 detector=detector,
+                experiment_make_model=experiment_make_model,
             )
         except (QueueFull, UploadRejected):
             raise
