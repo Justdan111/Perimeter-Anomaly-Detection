@@ -1,0 +1,20 @@
+# Committed sample clip, 1280x720, every frame. All reps (cars 40-143 px wide).
+3 W black Toronto taxi sedan -> Tesla Model S 0.55 (not on sale until 2012; clip is 2011)
+12 B dark sedan (occluded) -> Jeep Liberty SUV
+5 X person in front
+8 B dark-blue sedan -> Jeep Liberty SUV
+6 B dark-blue sedan -> Ford Escape SUV
+15 U dark sedan -> Ford Escort
+13 P black sedan -> Toyota Corolla 2011
+1 B dark-blue sedan -> Honda CR-V SUV
+0 B dark-blue sedan -> Ford Escape SUV
+9 C BMW X5 E70 -> X5 2007
+4 W black sedan -> Nissan GT-R
+17 X person in front
+11 W dark sedan -> FIAT 500
+10 B dark sedan -> Ford Escape SUV
+7 B dark sedan -> Ford Escape SUV
+14 X small, occluded
+16 W silver Toyota Highlander (identified in the 1080p source) -> GMC Acadia (#2 4Runner)
+2 X 44 px
+18 X 40 px
