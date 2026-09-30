@@ -1,0 +1,56 @@
+# Mexico City street, close daylight (Pexels clip in ~/Downloads). Codes: C correct, M make-only, P plausible, U unverifiable, W wrong (same body type), B obviously wrong (body type), X crop not one vehicle, moto
+58 X box truck + sedan
+46 X box truck + sedan
+22 C Jeep Grand Cherokee WK2, badge visible
+7 M Toyota Avanza (MX-market MPV, not in classes) -> Yaris
+1 M Ford Fusion -> Fiesta
+31 U CDMX taxi sedan -> Kia Spectra 2002
+53 W VW Vento (not in classes) -> Chevrolet Aveo
+64 U white sedan -> Suzuki SX4
+19 X dump truck + SUV
+17 W Toyota Avanza, Toyota badge visible -> Chevrolet Equinox
+72 P grey sedan -> Nissan Versa
+24 M Jeep Grand Cherokee (badge on door) -> Jeep Liberty
+54 M VW Vento, VW badge -> Jetta
+38 W Renault Kwid (not in classes) -> Jeep Renegade
+0 X two cars
+5 U maroon Aveo-like sedan -> Suzuki Forenza
+16 C Toyota Corolla E120 -> Corolla 2004
+8 X door close-up
+28 P black small sedan -> Toyota Yaris 2012
+51 X box truck side
+43 C Ford Escape gen1 -> Escape 2005
+40 B sedan -> smart fortwo
+47 C Ford Escape gen1 -> Escape 2005
+18 B Avanza MPV rear -> Chevrolet Silverado pickup
+66 X sedan + motorcycle
+70 P white Corolla E140 behind motorcycle -> Corolla 2011
+48 W Renault Kwid, Renault badge -> Jeep Renegade
+25 moto -> Tesla Model S
+68 C VW Jetta Mk6 -> Jetta 2012
+69 moto -> Chevrolet Colorado
+39 X wheel close-up
+26 moto -> Chevrolet Volt
+73 C Toyota Corolla E140 -> Corolla 2012
+67 C VW Jetta Mk6 -> Jetta 2012
+30 C VW Jetta Mk6 -> Jetta 2012
+27 moto -> Tesla Model S
+9 C Ford Fusion, badge -> Fusion 2017
+11 W Nissan Versa taxi -> Buick Regal
+75 moto -> Chevrolet Colorado
+6 X partial rear
+29 moto -> Hyundai Elantra
+61 X partial
+10 B sedan -> Nissan Rogue SUV
+57 M Nissan Versa taxi -> Sentra
+41 M Nissan Versa taxi -> Sentra
+49 M Nissan Versa taxi -> Sentra
+2 moto -> Nissan Leaf 0.74
+32 B Versa taxi -> Honda CR-V
+62 B Versa taxi (occluded) -> Chevrolet Colorado pickup
+3 B Versa taxi -> Honda CR-V
+71 B Versa taxi (occluded) -> Silverado pickup
+55 B Versa taxi (occluded) -> Silverado pickup
+74 W Versa taxi -> Tesla Model S 0.54
+12 W Versa taxi -> Toyota Prius
+42 X junk
