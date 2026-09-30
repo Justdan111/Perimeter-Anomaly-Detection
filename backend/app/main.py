@@ -17,16 +17,25 @@ Uploads (Phase 1, see docs/PHASE1.md and app/services/jobs.py):
 - `GET  /jobs/{job_id}/snapshots/{name}`      JPEG snapshot referenced by an alert
 - `GET  /jobs/{job_id}/reference-frame`       the upload's first frame
 
+Live frames (Phase 4, Stage 4a validation — see docs/PHASE4.md and
+app/services/live.py):
+
+- `POST /live/frames`                         one JPEG frame from a local agent
+- `GET  /live/stats`                          counters, timings, memory
+- `WS   /live/ws`                             detections pushed to dashboards
+
 The committed sample clip keeps its original synchronous endpoint: it's a
 fixed 5 s clip, a demo, and the regression check. Uploads are processed in
 the background because their length is up to the user. Results live in
-memory — a restart forgets them. No live input (see docs/PROJECT.md).
+memory — a restart forgets them. Live input is a Stage 4a experiment:
+frames go through the detector and zone check directly, nothing is stored.
 """
 
 import logging
 import os
 import shutil
 import threading
+import time
 from pathlib import PurePosixPath
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -35,7 +44,19 @@ from typing import Annotated
 
 import cv2
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from starlette.concurrency import run_in_threadpool
 from fastapi import Path as Path_  # pathlib.Path is used too
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -61,6 +82,17 @@ from app.services.jobs import (
     new_job_id,
     reference_key,
     snapshot_key,
+)
+from app.services.live import (
+    LIVE_LOCK_WAIT_S,
+    MAX_FRAME_BYTES,
+    FrameRejected,
+    LiveHub,
+    LiveStats,
+    decode_frame,
+    live_alerts,
+    preview_jpeg_b64,
+    whole_frame,
 )
 from app.services.storage import LocalObjectStore, ObjectStore, StorageError, store_from_env
 from app.services.uploads import (
@@ -721,3 +753,106 @@ def snapshot(
     if clip_id not in _results or not path.is_file():
         raise HTTPException(404, f"no snapshot {name!r} for clip {clip_id!r}")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# --- live frames (Phase 4, Stage 4a) -------------------------------------------------
+
+live_stats = LiveStats()
+live_hub = LiveHub()
+
+
+def _detect_live(frame, detector: FrameDetector) -> dict | None:
+    """Detector + zone check for one live frame; None if the model stayed
+    busy (an upload or the sample clip holds it) for LIVE_LOCK_WAIT_S."""
+    t0 = time.perf_counter()
+    if not _processing_lock.acquire(timeout=LIVE_LOCK_WAIT_S):
+        return None
+    wait_ms = (time.perf_counter() - t0) * 1000
+    try:
+        t1 = time.perf_counter()
+        detections = detector.detect(frame)
+        detect_ms = (time.perf_counter() - t1) * 1000
+    finally:
+        _processing_lock.release()
+    height, width = frame.shape[:2]
+    return {
+        "frame_width": width,
+        "frame_height": height,
+        "detections": len(detections),
+        "alerts": live_alerts(detections, whole_frame(width, height)),
+        "lock_wait_ms": round(wait_ms, 1),
+        "detect_ms": round(detect_ms, 1),
+    }
+
+
+@app.post("/live/frames")
+async def live_frame(
+    request: Request,
+    detector: Annotated[FrameDetector, Depends(get_detector)],
+    camera: Annotated[str, Query(max_length=40, pattern=r"^[\w.-]+$")] = "webcam",
+    sent_at: Annotated[float | None, Query(description="Agent's capture time (epoch s).")] = None,
+):
+    """Run one frame from a live agent through detection + zone check.
+
+    The body is the frame itself as a JPEG (`Content-Type: image/jpeg`).
+    Responds with the frame's alerts and pushes them to every dashboard on
+    `/live/ws`. 503 when the model stayed busy with an upload: live frames
+    are dropped, not queued (see app/services/live.py).
+    """
+    live_stats.count("received")
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_FRAME_BYTES:
+        live_stats.count("rejected")
+        raise HTTPException(413, f"frame is {declared} bytes; the limit is {MAX_FRAME_BYTES}")
+    body = await request.body()
+    try:
+        frame = await run_in_threadpool(decode_frame, body)
+    except FrameRejected as e:
+        live_stats.count("rejected")
+        raise HTTPException(422, str(e)) from e
+
+    result = await run_in_threadpool(_detect_live, frame, detector)
+    if result is None:
+        live_stats.count("dropped_busy")
+        await live_hub.broadcast({"type": "dropped", "camera": camera, "reason": "model busy"})
+        raise HTTPException(
+            503,
+            "the model is busy (an upload is being processed); frame dropped",
+            headers={"Retry-After": "1"},
+        )
+    live_stats.count("processed")
+    live_stats.count("alerts", len(result["alerts"]))
+    live_stats.timing(result["lock_wait_ms"], result["detect_ms"])
+    if live_hub.client_count:
+        preview = await run_in_threadpool(preview_jpeg_b64, frame)
+        await live_hub.broadcast(
+            {"type": "frame", "camera": camera, "received_at": time.time(), "sent_at": sent_at,
+             "preview_jpeg": preview, **result}
+        )
+    return result
+
+
+@app.get("/live/stats")
+def live_stats_endpoint() -> dict:
+    """Counters, recent timings and memory, for watching a sustained run."""
+    return {
+        **live_stats.snapshot(),
+        "dashboards_connected": live_hub.client_count,
+        "model_busy": _processing_lock.locked(),
+        "upload_jobs_active": jobs.active_count(),
+    }
+
+
+@app.websocket("/live/ws")
+async def live_ws(ws: WebSocket) -> None:
+    """Dashboards subscribe here; each processed live frame is pushed as JSON."""
+    await ws.accept()
+    live_hub.add(ws)
+    try:
+        await ws.send_json({"type": "hello", **live_stats.snapshot()})
+        while True:
+            await ws.receive_text()  # nothing expected; keeps the socket open
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_hub.remove(ws)
