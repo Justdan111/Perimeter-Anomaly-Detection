@@ -41,8 +41,16 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
   would take).
 - **No drawn zones for uploads.** An uploaded clip is watched across the whole
   frame; there is no zone editor yet. Only the sample clip has a drawn zone.
-- **No car make/model** (a possible later phase, low-confidence), and **no
-  licence plate recognition** (not planned).
+- **No car make/model — tested and rejected.** A pretrained make/model
+  classifier (`Jordo23/vehicle-classifier`, trained on VMMRdb) was measured on
+  real footage and on the deployed free tier.
+  - It got the make and model right on **25%** of vehicles. On vehicles from
+    outside the US market it got **none of 31**.
+  - It turned a 20 s clip's **38 s** of processing into **153 s**.
+  - The 512 MB instance was killed on **6 of 7** runs with it switched on.
+  - The decision is **no-go**. The numbers, method and every verdict are in
+    [`docs/PHASE3.md`](docs/PHASE3.md).
+- **No licence plate recognition** (not planned).
 - **A limited set of things to look for.** The model can see 80 object types;
   uploads can alert on people, vehicles (car, truck, bus, motorcycle),
   bicycles, dogs, cats, backpacks, handbags and suitcases. The sample clip
