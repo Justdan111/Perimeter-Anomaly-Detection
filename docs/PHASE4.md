@@ -117,8 +117,9 @@ which this instance has no memory for (details below).
 - **Tests:** 18 backend tests plus 8 frontend tests. Mutation-checked: 11
   planted bugs, all caught (one survivor was found and closed by a stronger
   test).
-- **Run:** your real webcam, from your Terminal, 13 min 30 s. Memory was
-  recorded two ways:
+- **Run:** a real laptop webcam, with the agent running in a local Terminal,
+  for 13 min 30 s. It was stopped by hand before its planned 15 minutes, once
+  both uploads had finished; no error ended it. Memory was recorded two ways:
   - by the agent (`/live/stats` every 15 s);
   - independently, by a 5 s poller on a separate machine connection.
 - **Uploads during the run** (the Phase 1 upload flow):
