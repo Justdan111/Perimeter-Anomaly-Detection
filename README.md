@@ -29,9 +29,17 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
 
 ## What this project deliberately does not do
 
-- **No live camera input.** It processes one recorded clip. Live camera
-  support is a planned next step — the design is written up in
-  [`docs/PROJECT.md`](docs/PROJECT.md) ("Day 6") — but it is **not built**.
+- **No live camera input — tested and rejected on this hosting.** It
+  processes recorded clips. A live webcam feed was tried against the deployed
+  free tier for 13.5 minutes.
+  - The feed on its own was stable.
+  - Every upload blocked it completely for the whole upload. The camera went
+    blind for up to **4 minutes**, and 40 of 181 frames were dropped.
+  - With both running, memory sat at the **512 MB** limit, and the server
+    stopped answering for about 80 s.
+  - The decision is **no-go** on the current single free instance. The
+    numbers, and what would change the answer, are in
+    [`docs/PHASE4.md`](docs/PHASE4.md).
 - **No evaluation against an academic dataset.** The test footage is a
   royalty-free (CC0) street clip, chosen to avoid the registration friction of
   datasets like i-LIDS or VIRAT. That is a deliberate scope decision, not an
