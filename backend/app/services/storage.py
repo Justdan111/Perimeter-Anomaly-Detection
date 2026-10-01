@@ -1,6 +1,6 @@
 """Where upload results live: Cloudflare R2 in production, a folder locally.
 
-Why R2 (docs/PHASE1.md): Render's free tier has no persistent disk. The
+Why R2: Render's free tier has no persistent disk. The
 filesystem is wiped on every redeploy, restart and idle spin-down, so
 anything written there is gone the next time someone checks on a job. R2 is
 S3-compatible, free up to 10 GB with no egress fees, and is used through

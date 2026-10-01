@@ -119,7 +119,7 @@ describe("touchesBottomEdge", () => {
   });
 
   test("boxes ending a few px short of the edge still count (seen on the real clip)", () => {
-    // Day 2: people walking out of shot had y2 = 717-718, not 720.
+    // On the sample clip, people walking out of shot had y2 = 717-718, not 720.
     assert.equal(touchesBottomEdge([150, 400, 190, 717], 720), true);
   });
 

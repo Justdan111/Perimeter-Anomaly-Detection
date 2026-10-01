@@ -36,7 +36,7 @@ export function filterAlerts(alerts: Alert[], filter: AlertFilter): Alert[] {
   );
 }
 
-/** Whether any alert carries colour data (jobs from before Phase 2 don't). */
+/** Whether any alert carries colour data (jobs from before colour extraction don't). */
 export function hasColorData(alerts: Alert[]): boolean {
   return alerts.some((a) => a.color != null || a.upper_color != null || a.lower_color != null);
 }

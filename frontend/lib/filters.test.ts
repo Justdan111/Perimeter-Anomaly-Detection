@@ -57,7 +57,7 @@ describe("filterAlerts", () => {
   });
 
   test("alerts without colour data never match a colour filter, and don't break anything", () => {
-    const legacy = { ...RED_CAR, color: undefined } as unknown as Alert; // a Phase 1 record
+    const legacy = { ...RED_CAR, color: undefined } as unknown as Alert; // a record from before colours
     assert.deepEqual(filterAlerts([legacy], { classes: null, color: "red", personPart: "any" }), []);
     assert.deepEqual(filterAlerts([legacy], { classes: null, color: null, personPart: "any" }), [legacy]);
   });

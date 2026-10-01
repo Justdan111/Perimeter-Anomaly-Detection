@@ -1,4 +1,4 @@
-"""Background processing for uploaded clips (Phase 1).
+"""Background processing for uploaded clips.
 
 Design — why it looks like this:
 
@@ -8,7 +8,7 @@ Design — why it looks like this:
   time finishes the first job sooner and keeps the model single-threaded.
 - **The result store (Cloudflare R2) is the record of a job; memory is a
   cache.** Render's free tier wipes the local filesystem on every restart,
-  redeploy and idle spin-down (docs/PHASE1.md), so everything that must
+  redeploy and idle spin-down, so everything that must
   outlive the process goes to R2 under `jobs/<id>/`: `job.json` (status,
   rewritten at each state change), `result.json` (alerts), `reference.jpg`
   and `snapshots/`. Memory holds only live progress for the job running now.
@@ -144,7 +144,7 @@ class Job:
         return cls(
             job_id=record["job_id"],
             filename=record["filename"],
-            # Phase 1 stored one string ("person" | "vehicle" | "both").
+            # Older records stored one string ("person" | "vehicle" | "both").
             classes=_normalise_classes(record["classes"]),
             probe=ClipProbe(**record["probe"]),
             zone=Zone.model_validate(record["zone"]),

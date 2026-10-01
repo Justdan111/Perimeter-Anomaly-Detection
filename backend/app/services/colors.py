@@ -61,7 +61,7 @@ _MIN_SHARE = 0.35  # the winner must hold at least this share of pixels...
 _MIN_LEAD = 1.5  # ...and at least this many times the runner-up's
 # White and gray are judged together, then split by the brightest pixels
 # (90th percentile of V): white paint in shade still reaches near-full
-# brightness somewhere; gray paint doesn't. See colors_eval in the README.
+# brightness somewhere; gray paint doesn't. See "Colours" in the README.
 _WHITE_FAMILY_P90_V = 230
 
 

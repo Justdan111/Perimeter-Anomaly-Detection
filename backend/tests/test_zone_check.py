@@ -2,7 +2,7 @@
 
 These tests deliberately need no model weights, no video file, and no I/O —
 plain coordinates in, boolean out. That is the whole reason this component is
-tested on Day 1 rather than deferred.
+tested first, in isolation, rather than deferred.
 
 Coordinates are frame pixel coordinates: x right, y *down* (OpenCV convention).
 Ray casting is indifferent to the y direction, but the fixtures are written the

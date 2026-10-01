@@ -1,7 +1,7 @@
 """Validation on the shared data models.
 
-These validators exist since Day 1 but were never exercised by a test — found
-by measuring coverage on Day 4. A zone that encloses no area would silently
+These validators existed from the start but were never exercised by a test —
+found by measuring coverage. A zone that encloses no area would silently
 never alert, so rejecting it is the point, and needs pinning.
 """
 

@@ -88,7 +88,7 @@ export const processClip = (clipId: string) =>
 
 export const getAlerts = (clipId: string) => request<AlertsResponse>(`/clips/${clipId}/alerts`);
 
-// --- uploads and jobs (Phase 1) ----------------------------------------------------
+// --- uploads and jobs ------------------------------------------------------------
 
 // What an uploader can choose to alert on (GET /uploads/limits lists them).
 export type ClassChoice = string;

@@ -1,6 +1,6 @@
 """How many CPU threads inference uses inside a CPU-limited container.
 
-Found on Day 5: ultralytics sets PyTorch's thread count to
+Found while containerising: ultralytics sets PyTorch's thread count to
 `os.cpu_count() - 1` during the first prediction. Inside a container that
 is the HOST's core count, not the container's CPU allowance, so a container
 limited to 1 CPU ran 7 inference threads fighting over it. Measured in the

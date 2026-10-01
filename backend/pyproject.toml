@@ -26,11 +26,11 @@ dependencies = [
 # This is an application, not a distributable library: the `app` package is
 # imported from the project root, never built into a wheel. Without this, uv
 # tries to build the project and expects a src/ layout, which conflicts with
-# the app/ layout the architecture in docs/PROJECT.md specifies.
+# this project's app/ layout.
 [tool.uv]
 package = false
 # `ultralytics` depends on the GUI build `opencv-python`, which drags in
-# Qt/GUI libraries a server never uses and would bloat the Day 5 Docker image.
+# Qt/GUI libraries a server never uses and would bloat the Docker image.
 # Both it and `opencv-python-headless` install the same `cv2` module, so the
 # headless build (a direct dependency above) fully satisfies ultralytics.
 exclude-dependencies = ["opencv-python"]

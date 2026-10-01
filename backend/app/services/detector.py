@@ -6,7 +6,7 @@ object — so replacing or upgrading the model touches this file and nothing
 else.
 
 Model: **YOLO26-N** (Ultralytics, January 2026). Chosen for CPU inference —
-this is intended to run on a free-tier host with no GPU. See docs/PROJECT.md
+this is intended to run on a free-tier host with no GPU. See ARCHITECTURE.md
 for the full reasoning.
 
 LICENSE: the `ultralytics` package and the YOLO26 weights are **AGPL-3.0**.
@@ -25,7 +25,7 @@ import numpy as np
 from app.models.schemas import Detection
 
 # Keep Ultralytics' settings/config inside the project instead of the user's
-# home directory, so behaviour is the same in Docker (Day 5) as locally.
+# home directory, so behaviour is the same in Docker as locally.
 # Must be set before `ultralytics` is imported.
 _MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
 os.environ.setdefault("YOLO_CONFIG_DIR", str(_MODELS_DIR))
@@ -37,8 +37,8 @@ from ultralytics import YOLO  # noqa: E402  (must follow the env vars above)
 DEFAULT_WEIGHTS = _MODELS_DIR / "yolo26n.pt"
 
 # Only surface detections the model is reasonably sure about. 0.35 is a
-# starting point, not a tuned value — Day 4 revisits it against the sample
-# clip. Recorded here so the number is a decision, not an accident.
+# starting point, not a tuned value: it was never tuned against labelled
+# footage. Recorded here so the number is a decision, not an accident.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.35
 
 _CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
@@ -52,7 +52,7 @@ _CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
 # first prediction. In a container, os.cpu_count() is the HOST's core count,
 # not the container's CPU allowance, so a container limited to 1 CPU ran 7
 # inference threads fighting over it — ~13x slower per frame than 1 thread
-# (measured Day 5; see tests/test_inference_threads.py for the numbers).
+# (measured; see tests/test_inference_threads.py for the numbers).
 # The fix: read the container's actual CPU limit and use that many threads.
 # With no limit (native runs), ultralytics' own default is left alone.
 
