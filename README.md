@@ -24,8 +24,8 @@ elapsed time.*
 - **Dashboard** (`frontend/`): Next.js on Vercel — process the clip, review
   alerts grouped by time, see the zone drawn over the frame.
 
-Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
-[`docs/SPEC.MD`](docs/SPEC.MD).
+How it works, why each tool was chosen, what was tried and rejected, and its
+limitations: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## What this project deliberately does not do
 
@@ -38,8 +38,8 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
   - With both running, memory sat at the **512 MB** limit, and the server
     stopped answering for about 80 s.
   - The decision is **no-go** on the current single free instance. The
-    numbers, and what would change the answer, are in
-    [`docs/PHASE4.md`](docs/PHASE4.md).
+    summary, and what would change the answer, are in
+    [`ARCHITECTURE.md`](ARCHITECTURE.md#what-was-tried-and-rejected).
 - **No evaluation against an academic dataset.** The test footage is a
   royalty-free (CC0) street clip, chosen to avoid the registration friction of
   datasets like i-LIDS or VIRAT. That is a deliberate scope decision, not an
@@ -56,8 +56,8 @@ Scope, design and the day-by-day plan: [`docs/PROJECT.md`](docs/PROJECT.md),
     outside the US market it got **none of 31**.
   - It turned a 20 s clip's **38 s** of processing into **153 s**.
   - The 512 MB instance was killed on **6 of 7** runs with it switched on.
-  - The decision is **no-go**. The numbers, method and every verdict are in
-    [`docs/PHASE3.md`](docs/PHASE3.md).
+  - The decision is **no-go**. A summary is in
+    [`ARCHITECTURE.md`](ARCHITECTURE.md#what-was-tried-and-rejected).
 - **No licence plate recognition** (not planned).
 - **A limited set of things to look for.** The model can see 80 object types;
   uploads can alert on people, vehicles (car, truck, bus, motorcycle),
@@ -190,12 +190,12 @@ with some sun on them; black bags.
 alerts of the 56 s clip. **On the deployed free tier it made no measurable
 difference** (same clips, same classes, 2026-09-25):
 
-| Clip | Processing, Phase 1 runs | Processing, with colours |
+| Clip | Processing, before colours | Processing, with colours |
 |---|---|---|
 | 20 s, 720p | 37.3, 38.0, 38.8 s | 37.4 s |
 | 56 s, 1080p | 147.2, 155.0, 155.4 s | 155.4 s |
 
-Both fall inside Phase 1's run-to-run range, so the 60 s upload cap and the
+Both fall inside the earlier run-to-run range, so the 60 s upload cap and the
 timing table under [Uploads](#uploads--limits-and-measured-timing) still
 stand. Jobs processed before colours existed still open (verified live):
 their alerts show no colours and the view says colours weren't recorded.
@@ -255,7 +255,7 @@ The container is slower than native for identifiable reasons: macOS decodes
 the video in hardware (0.14 s vs 1.4 s in the container) and its PyTorch build
 uses different math libraries (inference 34 vs 65 ms/frame).
 
-**A CPU-limit bug found and fixed on the way (Day 5).** Ultralytics sets
+**A CPU-limit bug found and fixed while containerising.** Ultralytics sets
 PyTorch's thread count from the machine's core count — but inside a container
 that is the *host's* core count, not the container's CPU allowance. Limited to
 1 CPU, the container ran 7 inference threads fighting over it: **173 s** for
@@ -319,10 +319,10 @@ requests return `503` with the same message.
   weights baked in at build time, so a cold start never downloads them.
 - **Frontend — Vercel**, Root Directory `frontend`, env `NEXT_PUBLIC_API_URL`
   set to the Render URL before the build. **Deploy the frontend together with
-  the backend when the API changes shape**: Phase 2 changed a job's `classes`
-  from one value to a list, and for a while the live site ran the Phase 1
-  frontend against the Phase 2 API — every job page failed to render until
-  Vercel redeployed from `main`.
+  the backend when the API changes shape**: when a job's `classes` changed
+  from one value to a list, the live site briefly ran the old frontend
+  against the new API — every job page failed to render until Vercel
+  redeployed from `main`.
 - **Upload results — Cloudflare R2**: a private bucket with a lifecycle rule
   deleting objects after 7 days, and an API token with Object Read & Write on
   that bucket only. On Render, set `PERIMETER_R2_ENDPOINT`
