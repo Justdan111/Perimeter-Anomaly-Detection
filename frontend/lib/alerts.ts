@@ -19,7 +19,7 @@ export interface Alert {
   zone_name: string;
   snapshot: string;
   snapshot_url: string;
-  // Phase 2. Missing (undefined) on alerts recorded before colour extraction
+  // Missing (undefined) on alerts recorded before colour extraction
   // existed; null when not applicable (people have no single `color`).
   color?: string | null;
   upper_color?: string | null;

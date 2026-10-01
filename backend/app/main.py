@@ -9,7 +9,7 @@ Endpoints (all JSON unless noted):
 - `GET  /clips/{clip_id}/alerts`              alerts from the last run
 - `GET  /clips/{clip_id}/snapshots/{name}`    JPEG snapshot referenced by an alert
 
-Uploads (Phase 1, see docs/PHASE1.md and app/services/jobs.py):
+Uploads (see app/services/jobs.py):
 
 - `POST /uploads`                             upload a clip -> 202 + job id
 - `GET  /jobs/{job_id}`                       job status and progress
@@ -20,7 +20,7 @@ Uploads (Phase 1, see docs/PHASE1.md and app/services/jobs.py):
 The committed sample clip keeps its original synchronous endpoint: it's a
 fixed 5 s clip, a demo, and the regression check. Uploads are processed in
 the background because their length is up to the user. Results live in
-memory — a restart forgets them. No live input (see docs/PROJECT.md).
+memory — a restart forgets them. No live input (see ARCHITECTURE.md).
 """
 
 import logging
@@ -117,13 +117,13 @@ _results: dict[str, ClipResult] = {}
 # sample-clip endpoint and the upload job runner.
 _processing_lock = threading.Lock()
 
-# --- uploads (Phase 1) ---
+# --- uploads ---
 UPLOAD_LIMITS = DEFAULT_LIMITS
 # Uploads are sampled at 2 frames per second of video, not every frame: at
 # ~0.57 s per processed frame on the free-tier host, every frame of a 60 s
 # 30 fps clip would take ~17 minutes; 2 fps keeps it to ~120 processed frames.
 # A walking person moves ~0.7 m between samples, so zone entries are still
-# caught (Day 2 reasoning). The sample clip keeps every frame.
+# caught. The sample clip keeps every frame.
 UPLOAD_SAMPLE_FPS = float(os.environ.get("PERIMETER_UPLOAD_SAMPLE_FPS", 2.0))
 # Allowance for the multipart framing around the file in the request body.
 _MULTIPART_OVERHEAD = 1024 * 1024
@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
     in a degraded state: /health reports `model_loaded: false` with the
     reason, processing requests get a 503 saying the same, and the error is
     logged. That is louder than refusing to boot — a host polling /health
-    (Day 5) sees why, instead of a crash loop with the reason only in logs.
+    sees why, instead of a crash loop with the reason only in logs.
     """
     global model_load_error, storage_error, jobs
     # The work folder holds uploaded videos only while their job runs; after
@@ -346,8 +346,7 @@ def health() -> HealthResponse:
 
     Reports whether the model is actually loaded, not just whether the
     process is up — a service that is running but can't do inference is not
-    healthy in any useful sense, and Day 5 deploys this to a host that will
-    poll it.
+    healthy in any useful sense, and the host this is deployed to polls it.
     """
     return HealthResponse(
         status="ok" if detector.is_loaded and storage_error is None else "degraded",
@@ -463,7 +462,7 @@ def alerts(clip_id: str) -> AlertsResponse:
     )
 
 
-# --- uploads and jobs (Phase 1) ---------------------------------------------------
+# --- uploads and jobs ------------------------------------------------------------
 
 
 def _job_response(job: Job) -> JobResponse:
@@ -557,13 +556,13 @@ def create_upload(
     """Validate and store an uploaded clip, then queue it for processing.
 
     Returns 202 immediately with a job id; poll `status_url` for progress.
-    The whole frame is the zone (Phase 1 has no zone editor). A plain `def`
+    The whole frame is the zone (there is no zone editor). A plain `def`
     endpoint: copying the file and probing it with OpenCV block, so FastAPI
     runs this in a worker thread instead of on the event loop.
     """
     if storage_error is not None:
         raise HTTPException(503, f"result storage is unavailable, so uploads are disabled ({storage_error})")
-    # "both" (Phase 1's choice) still accepted; stored as what it means.
+    # "both" (the original person-and-vehicle choice) still accepted; stored as what it means.
     selection = [c for choice in classes for c in (["person", "vehicle"] if choice == "both" else [choice])]
     try:
         classes_for(selection)

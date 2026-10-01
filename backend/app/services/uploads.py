@@ -7,7 +7,7 @@ What can be checked cheaply here: the container type (from the first bytes),
 that OpenCV opens the file and decodes its first frame, and the limits below
 (from the container header). What can't: damage further into the file — a
 truncated upload decodes fine at the start. That surfaces during processing,
-where Day 4's frame-count check fails the job with a clear reason.
+where the frame-count check in `process_clip` fails the job with a clear reason.
 
 Limits — see "Uploads" in the README for how these were chosen and measured.
 """

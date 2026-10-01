@@ -43,8 +43,7 @@ class Zone(BaseModel):
     # to. Recording the frame size the zone was drawn against makes a
     # resolution mismatch (a zone drawn on 1080p applied to a 720p frame, with
     # every coordinate silently 1.5x off) a loud failure rather than a subtly
-    # wrong alert list. NOTE: this is one field beyond docs/SPEC.md section 7,
-    # added deliberately for that reason.
+    # wrong alert list.
     frame_width: int = Field(
         gt=0, description="Width of the frame the points were drawn against."
     )
@@ -87,7 +86,7 @@ class Detection(BaseModel):
 
     Deliberately plain data. No frame, no model handle, no tracking identity —
     detections are independent per frame, which is an explicit scope decision
-    (see docs/PROJECT.md, "What's explicitly OUT of scope").
+    (see ARCHITECTURE.md, "Known limitations").
     """
 
     class_name: str = Field(description='Model class label, e.g. "person", "car".')
@@ -145,8 +144,8 @@ class Alert(BaseModel):
         )
     )
     zone_name: str = Field(description="Name of the zone the anchor fell inside.")
-    # Phase 2. Optional so that alerts recorded before colour extraction
-    # existed (Phase 1 results in R2) still load: missing means "not recorded".
+    # Optional so that alerts recorded before colour extraction existed
+    # (older results in R2) still load: missing means "not recorded".
     color: ColorName | None = Field(
         default=None,
         description="Dominant colour of a vehicle or object (not set for people).",

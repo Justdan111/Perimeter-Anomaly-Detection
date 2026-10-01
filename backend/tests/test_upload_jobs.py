@@ -1,4 +1,4 @@
-"""Phase 1: upload a clip, process it as a background job, poll, get results.
+"""Upload a clip, process it as a background job, poll, get results.
 
 Real files go through the real upload endpoint, the real OpenCV probe and
 the real job runner thread. Only the detector is faked, so the expected
@@ -410,7 +410,7 @@ class TestUploadValidation:
 
     @pytest.mark.parametrize("bad", ["giraffe", ["person", "carrot"]])
     def test_invalid_class_choice_is_422(self, client, bad):
-        # ("bicycle" was the invalid example in Phase 1; it's selectable now.)
+        # ("bicycle" used to be the invalid example here; it's selectable now.)
         assert upload(client, classes=bad).status_code == 422
 
     def test_missing_file_is_422(self, client):
@@ -418,7 +418,7 @@ class TestUploadValidation:
 
     def test_truncated_clip_is_accepted_then_the_job_fails_clearly(self, client, store, tmp_path):
         # Damage past the first frame can't be seen at upload time without
-        # decoding the whole file; the job catches it (Day 4's check).
+        # decoding the whole file; the job catches it (process_clip's frame-count check).
         data = SAMPLE_CLIP.read_bytes()
         r = upload(client, data=data[: len(data) // 2])
         assert r.status_code == 202
@@ -515,7 +515,7 @@ def test_limits_endpoint_reports_the_limits_actually_enforced(client, monkeypatc
     assert body["sample_fps"] == main.UPLOAD_SAMPLE_FPS
 
 
-# --- persistence: what R2 is for (docs/PHASE1.md) -------------------------------------------
+# --- persistence: what R2 is for ---------------------------------------------------------------
 
 
 class TestSurvivesRestart:
@@ -636,7 +636,7 @@ def test_snapshots_are_uploaded_in_parallel(client, store, monkeypatch):
 
 
 
-# --- Phase 2: more classes, colour on every alert ---------------------------------------------
+# --- more classes, colour on every alert -----------------------------------------------------
 
 
 class PersonCarDogDetector(PersonAndCarDetector):
@@ -666,7 +666,7 @@ class TestPhase2:
         assert all(a["color"] and a["upper_color"] is None for a in cars)
 
     def test_a_phase1_job_record_without_colours_still_loads(self, client, store, tmp_path, monkeypatch):
-        # Phase 1 stored classes as one string and alerts with no colour
+        # Older records stored classes as one string and alerts with no colour
         # fields. Such records are still in R2 (for 7 days) and must render.
         job_id = upload(client, classes="vehicle").json()["job_id"]
         wait_for(client, job_id)

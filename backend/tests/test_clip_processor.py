@@ -4,7 +4,7 @@ Same discipline as `test_zone_check.py`: no model weights, no video file, no
 I/O. Every function tested here takes plain values or `Detection` fixtures and
 returns plain values. The one thing in `clip_processor.py` that is NOT covered
 here is the OpenCV read loop itself, which was verified by hand against the
-real sample clip (see the Day 2 notes in the module docstring).
+real sample clip (see the module docstring).
 
 Several tests below exist because a specific plausible mistake would otherwise
 pass silently. Each of those names the mistake it guards against, and was run
@@ -104,7 +104,7 @@ class TestCheckFrameSize:
             check_frame_size(width=640, height=360, zone=ZONE)
 
     def test_error_is_a_value_error(self):
-        # Callers (the API layer, Day 3) can catch it as a bad-input error.
+        # Callers (the API layer) can catch it as a bad-input error.
         assert issubclass(FrameSizeMismatchError, ValueError)
 
 
@@ -244,8 +244,8 @@ class TestAlertsForFrame:
         assert alerts == []
 
     def test_disallowed_class_inside_zone_produces_no_alert(self):
-        # The false-positive the Day 1 inference run proved was possible: a
-        # handbag sitting in the zone is not an intrusion.
+        # The false positive the first inference run on the sample clip showed
+        # was possible: a handbag sitting in the zone is not an intrusion.
         alerts = alerts_for_frame(
             [det("handbag", bbox=(550.0, 400.0, 600.0, 450.0))],
             ZONE, frame_index=0, clip_fps=24.0, snapshot="f.jpg",
@@ -275,7 +275,7 @@ class TestAlertsForFrame:
         ) == []
 
 
-# --- Phase 1: class selection, whole-frame zone, progress -------------------------------
+# --- class selection, whole-frame zone, progress ----------------------------------------
 
 from app.services.clip_processor import (  # noqa: E402
     CLASS_GROUPS,
@@ -290,7 +290,7 @@ class TestClassGroups:
         # quietly add or drop a class.
         assert CLASS_GROUPS["person"] == {"person"}
         assert CLASS_GROUPS["vehicle"] == {"car", "truck", "bus", "motorcycle"}
-        # "both" is now a legacy alias (Phase 1 records), resolved by
+        # "both" is now a legacy alias (older job records), resolved by
         # classes_for; the guarantee is the same.
         assert classes_for(["both"]) == ALLOWED_CLASSES
         assert CLASS_GROUPS["person"] | CLASS_GROUPS["vehicle"] == ALLOWED_CLASSES
@@ -346,7 +346,7 @@ class TestCountSampledFrames:
             assert count_sampled_frames(frames, fps, rate) == expected
 
 
-# --- Phase 2: more classes, colour on every alert ------------------------------------------
+# --- more classes, colour on every alert --------------------------------------------------
 
 from app.services.clip_processor import SELECTABLE_CLASSES, add_colors, classes_for  # noqa: E402
 
@@ -360,7 +360,7 @@ class TestPhase2Classes:
         }
 
     def test_default_filter_is_unchanged_so_the_sample_clip_still_ignores_bags(self):
-        # Day 2: a handbag in the zone must not raise an intrusion alert on
+        # A handbag in the zone must not raise an intrusion alert on
         # the sample clip. New classes are opt-in at upload, not the default.
         assert ALLOWED_CLASSES == {"person", "car", "truck", "bus", "motorcycle"}
         dets = [det("handbag", bbox=(550.0, 400.0, 600.0, 450.0))]
@@ -371,7 +371,7 @@ class TestPhase2Classes:
         assert classes_for(["vehicle", "suitcase"]) == {"car", "truck", "bus", "motorcycle", "suitcase"}
 
     def test_legacy_phase1_choices_still_resolve(self):
-        # Phase 1 job records stored "person" | "vehicle" | "both".
+        # Older job records stored "person" | "vehicle" | "both".
         assert classes_for(["both"]) == ALLOWED_CLASSES
         assert classes_for("vehicle") == {"car", "truck", "bus", "motorcycle"}
 
@@ -431,7 +431,7 @@ class TestAddColors:
         assert a.color == "red"
 
     def test_alert_without_colour_fields_still_validates(self):
-        # Phase 1 result.json records in R2 have no colour fields.
+        # Older result.json records in R2 have no colour fields.
         from app.models.schemas import Alert
 
         legacy = {k: v for k, v in alert_for("car", (1.0, 1.0, 50.0, 50.0)).model_dump().items()

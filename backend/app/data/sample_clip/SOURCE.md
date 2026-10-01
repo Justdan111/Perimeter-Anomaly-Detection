@@ -18,7 +18,7 @@ data came from matters more than the minimum the license demands.
 ### What was changed from the original
 
 The original is 1920x1080, 56.6 s, ~69 MB — too large to commit and longer
-than anything Day 1 needs. Derived with `ffmpeg`:
+than the sample needs. Derived with `ffmpeg`:
 
 ```sh
 ffmpeg -ss 33 -i DiagonalCrosswalkYongeDundas.webm -t 5 \
@@ -41,7 +41,7 @@ Result: 120 frames at 23.976 fps, 1.9 MB.
   camera doesn't move. A handheld clip would invalidate the whole zone model.
 - It contains **both target classes** (people and vehicles) simultaneously.
 - It has **a natural zone** — the crosswalk — to draw a polygon around, with
-  real traffic both inside and outside it, so Day 2 can be hand-verified.
+  real traffic both inside and outside it, so the alert list can be checked by hand.
 
 ### Stated limitation
 
@@ -49,10 +49,10 @@ This is a busy public street, not a secured perimeter. It exercises the
 pipeline honestly (real people, real vehicles, real occlusion, a fixed camera)
 but it is **not** a benchmark, and this project makes no accuracy claims
 measured against an academic surveillance dataset such as i-LIDS or VIRAT.
-See `docs/PROJECT.md` → "Test data".
+See `ARCHITECTURE.md` → "Known limitations".
 
 ## `reference_frame.jpg`
 
-The first frame of `crosswalk.mp4`, extracted for two purposes: the Day 1
-single-image inference check, and (Day 3) the still the configured zone is
-drawn over in the dashboard. Same source and license as above.
+The first frame of `crosswalk.mp4`, extracted for two purposes: the first
+single-image inference check, and the still the configured zone is drawn
+over in the dashboard. Same source and license as above.

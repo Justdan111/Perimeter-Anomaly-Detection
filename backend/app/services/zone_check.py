@@ -2,7 +2,7 @@
 
 A pure function: coordinates in, boolean out. No model, no video file, no I/O,
 no imports from anywhere else in this project. That isolation is deliberate —
-it is what lets this logic be tested on Day 1 with nothing but plain numbers,
+it is what lets this logic be tested with nothing but plain numbers,
 and it is the piece whose correctness every alert depends on.
 
 Chosen approach: the ray casting (even-odd) rule, with an explicit on-boundary

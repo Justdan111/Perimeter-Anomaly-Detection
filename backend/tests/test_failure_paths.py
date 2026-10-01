@@ -444,7 +444,7 @@ class TestLoadedModelPath:
 
 
 def test_missing_weights_message_gives_a_fetch_command_for_the_real_path(tmp_path):
-    # The Day 1 message suggested YOLO('yolo26n.pt'), which downloads into
+    # An earlier message suggested YOLO('yolo26n.pt'), which downloads into
     # the current directory — not where the service looks — so following the
     # error's own advice didn't fix the error. The command must name the
     # actual weights path (verified: ultralytics downloads to that path).

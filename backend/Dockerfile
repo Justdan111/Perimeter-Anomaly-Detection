@@ -6,7 +6,7 @@
 #   docker build --target test -t perimeter-test .   # same image + dev deps + tests
 #   docker run --rm perimeter-test                   # runs pytest inside it
 #
-# Decisions (see docs/DAY5.md):
+# Decisions (see also ARCHITECTURE.md):
 # - Runs as a non-root user. Also the only way the write-failure tests can
 #   run in here: root ignores directory permissions, so they skip as root.
 # - The YOLO26-N weights are downloaded while building and baked into the

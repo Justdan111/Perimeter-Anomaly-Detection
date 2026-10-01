@@ -11,10 +11,10 @@ Scope notes:
 
 - Frames are independent. There is no tracking: the same person standing in
   the zone for two seconds is one alert per processed frame, not one alert.
-  Cross-frame tracking is permanently out of scope (docs/PROJECT.md).
-- Recorded clips only. `process_clip` takes a file path. The Day 6 live-feed
-  plan swaps the `cv2.VideoCapture(path)` source for a `FrameSource`; the
-  pure functions below don't care where frames come from.
+  Cross-frame tracking is out of scope (ARCHITECTURE.md).
+- Recorded clips only. `process_clip` takes a file path. The pure functions
+  below don't care where frames come from; a live-feed experiment that
+  reused them was tested and rejected for this hosting (ARCHITECTURE.md).
 
 Anchor-point decision
 ---------------------
@@ -34,7 +34,7 @@ clip's zone this is harmless, because the zone's lowest vertex is at y=628,
 above the frame edge, so a clipped anchor at y=720 is never inside it.
 It would matter for a zone that reaches the bottom edge of the frame. Fixing
 it properly (e.g. estimating foot position from box height) is out of scope
-for this sprint.
+here.
 
 Sampling-rate decision
 ----------------------
@@ -49,12 +49,12 @@ exactly the full run's alerts for the frames it kept. So a full run is the
 reference answer that any sampled run can be checked against, and on the
 5 s / 120-frame sample clip it costs a few seconds on a laptop CPU. The
 trade-off: CPU cost and alert count both scale linearly with frames
-processed. For long clips or a slow host (Render free tier, Day 5), pass
+processed. For long clips or a slow host (the Render free tier), pass
 something like `sample_fps=2`. A person walking at ~1.4 m/s moves ~0.7 m
 between samples at 2 fps, far less than the width of any sensible zone, so
 someone crossing the zone is still caught, at up to 0.5 s of timestamp
-error. The right value for the deployed service is a Day 5 measurement,
-not a guess made here.
+error. Uploads use 2 fps, chosen from the deployed host's measured cost
+(see UPLOAD_SAMPLE_FPS in app/main.py); the sample clip keeps every frame.
 """
 
 from __future__ import annotations
@@ -84,11 +84,11 @@ PERSON_CLASSES: frozenset[str] = frozenset({"person"})
 VEHICLE_CLASSES: frozenset[str] = frozenset({"car", "truck", "bus", "motorcycle"})
 ALLOWED_CLASSES: frozenset[str] = PERSON_CLASSES | VEHICLE_CLASSES
 
-# What an uploader chooses between. Phase 1 split the list above in two;
-# Phase 2 adds more of the 80 COCO classes YOLO26-N already detects — no new
-# detection logic, just exposing more of it. The *default* (ALLOWED_CLASSES,
-# used by the sample clip) is unchanged: on the sample clip a handbag in the
-# zone must not become an intrusion alert (Day 2).
+# What an uploader chooses between: the list above split in two, plus more
+# of the 80 COCO classes YOLO26-N already detects — no new detection logic,
+# just exposing more of it. The *default* (ALLOWED_CLASSES, used by the
+# sample clip) is narrower on purpose: on the sample clip a handbag in the
+# zone must not become an intrusion alert.
 CLASS_GROUPS: dict[str, frozenset[str]] = {
     "person": PERSON_CLASSES,
     "vehicle": VEHICLE_CLASSES,
@@ -100,13 +100,13 @@ CLASS_GROUPS: dict[str, frozenset[str]] = {
     "suitcase": frozenset({"suitcase"}),
 }
 SELECTABLE_CLASSES: tuple[str, ...] = tuple(CLASS_GROUPS)
-_LEGACY_CHOICES = {"both": ("person", "vehicle")}  # Phase 1 job records
+_LEGACY_CHOICES = {"both": ("person", "vehicle")}  # older job records
 
 
 def classes_for(selection: Iterable[str] | str) -> frozenset[str]:
     """Detector classes for an uploader's selection (e.g. ["person", "dog"]).
 
-    Accepts Phase 1's stored values too ("person" | "vehicle" | "both").
+    Accepts older job records' stored values too ("person" | "vehicle" | "both").
     """
     if isinstance(selection, str):
         selection = [selection]
@@ -305,7 +305,7 @@ def count_sampled_frames(frame_count: int, clip_fps: float, sample_fps: float | 
 def whole_frame_zone(width: int, height: int, name: str = "Whole frame") -> Zone:
     """A zone covering the entire frame: every allowed detection alerts.
 
-    The Phase 1 default for uploads, which have no drawn zone. Because the
+    The default for uploads, which have no drawn zone. Because the
     boundary counts as inside, this includes boxes cut off by the frame
     edge — so the anchor-clipping limitation can't change a verdict here.
     """
